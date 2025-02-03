@@ -112,9 +112,6 @@ abstract contract AccountERC6900 is AccountCore, IModularAccount {
         bytes[] calldata hooks
     ) public override {
         ModuleEntity moduleEntity = validationConfig.moduleEntity();
-        if (ValidationFlags.unwrap(_validationStorage[moduleEntity].validationFlags) != 0) {
-            revert("Account: validation config already installed");
-        }
 
         _validationStorage[moduleEntity].validationFlags = validationConfig.flags();
 
@@ -159,12 +156,12 @@ abstract contract AccountERC6900 is AccountCore, IModularAccount {
                 revert("Account: hookUninstallData length does not match hooks length");
             }
 
-            _validationStorage[validationFunction].validationHooks.clear();
-            _validationStorage[validationFunction].executionHooks.clear();
-
             // TODO: `onUninstall` for each hook. How do we sort them?
             // https://github.com/erc6900/reference-implementation/blob/c9b256cfd963a655179fa3cd9ea3f92c73cbfcdd/src/account/ModuleManagerInternals.sol#L289
         }
+
+        _validationStorage[validationFunction].validationHooks.clear();
+        _validationStorage[validationFunction].executionHooks.clear();
 
         bool uninstallSuccessful = true;
         if (uninstallData.length > 0) {
@@ -174,6 +171,56 @@ abstract contract AccountERC6900 is AccountCore, IModularAccount {
         }
 
         emit ValidationUninstalled(validationFunction.module(), validationFunction.entity(), uninstallSuccessful);
+    }
+
+    fallback() external payable {
+        ExecutionStorage storage executionStorage = _executionStorage[msg.sig];
+        if (executionStorage.module == address(0)) {
+            revert("Account: function not found");
+        }
+
+        ERC6900Utils.PreHookResult[] memory preValidationExecutionHooksResults;
+
+        if (
+            msg.sender != address(this) &&
+            msg.sender != address(entryPoint()) &&
+            !executionStorage.skipRuntimeValidation
+        ) {
+            // Do further validation
+            ModuleEntity moduleEntity = ModuleEntity.wrap(
+                bytes24(bytes20(msg.sender)) | bytes24(uint192(type(uint32).max))
+            );
+
+            ValidationStorage storage validationStorage = _validationStorage[moduleEntity];
+            if (
+                !(executionStorage.allowGlobalValidation && validationStorage.validationFlags.isGlobal()) &&
+                !validationStorage.selectors.contains(msg.sig)
+            ) {
+                revert("Unauthorized");
+            }
+
+            validationStorage.validationHooks.executePreValidationHooks();
+            preValidationExecutionHooksResults = validationStorage.executionHooks.executeExecutionPreHooks();
+        }
+
+        // Run validation hooks and validation execution hooks
+        ERC6900Utils.PreHookResult[] memory preSelectorExecutionHooksResults = executionStorage
+            .executionHooks
+            .executeExecutionPreHooks();
+
+        (bool execSuccess, bytes memory execReturnData) = executionStorage.module.call(msg.data);
+        if (!execSuccess) {
+            // Bubble up execution error
+            assembly ("memory-safe") {
+                revert(add(execReturnData, 32), mload(execReturnData))
+            }
+        }
+
+        // Run post hooks in reverse order
+        preSelectorExecutionHooksResults.executePostHooks();
+        if (preValidationExecutionHooksResults.length > 0) {
+            preValidationExecutionHooksResults.executePostHooks();
+        }
     }
 
     function _addExecutionFunction(
@@ -205,6 +252,9 @@ abstract contract AccountERC6900 is AccountCore, IModularAccount {
     }
 
     function _addExecutionHook(address module, ManifestExecutionHook calldata manifestExecutionHook) internal {
+        if (!manifestExecutionHook.isPreHook && !manifestExecutionHook.isPostHook) {
+            revert("Account: execution hook must be pre or post");
+        }
         if (
             !_executionStorage[manifestExecutionHook.executionSelector].executionHooks.add(
                 _packExecutionHook(module, manifestExecutionHook)
@@ -297,6 +347,9 @@ abstract contract AccountERC6900 is AccountCore, IModularAccount {
         HookConfig hookConfig,
         bytes calldata onInstallData
     ) internal {
+        if (!hookConfig.hasPre() && !hookConfig.hasPost()) {
+            revert("Account: execution hook must be pre or post");
+        }
         if (!_validationStorage[moduleEntity].executionHooks.add(HookConfig.unwrap(hookConfig))) {
             revert("Validation execution hook already exists");
         }

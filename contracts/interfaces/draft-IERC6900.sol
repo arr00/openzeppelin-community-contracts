@@ -2,6 +2,7 @@
 pragma solidity ^0.8.0;
 
 import {IERC165} from "@openzeppelin/contracts/utils/introspection/IERC165.sol";
+import {PackedUserOperation} from "@openzeppelin/contracts/interfaces/draft-IERC4337.sol";
 
 /// @dev A packed representation of a module function.
 /// Consists of the following, left-aligned:
@@ -169,4 +170,123 @@ interface IModule is IERC165 {
     /// names MUST NOT contain a period character.
     /// @return The module ID.
     function moduleId() external view returns (string memory);
+}
+
+interface IExecutionHookModule is IModule {
+    /// @notice Run the pre execution hook specified by the `entityId`.
+    /// @dev To indicate the entire call should revert, the function MUST revert.
+    /// @param entityId An identifier that routes the call to different internal implementations, should there
+    /// be more than one.
+    /// @param sender The caller address.
+    /// @param value The call value.
+    /// @param data The calldata sent. For `executeUserOp` calls of validation-associated hooks, hook modules
+    /// should receive the full calldata.
+    /// @return Context to pass to a post execution hook, if present. An empty bytes array MAY be returned.
+    function preExecutionHook(
+        uint32 entityId,
+        address sender,
+        uint256 value,
+        bytes calldata data
+    ) external returns (bytes memory);
+
+    /// @notice Run the post execution hook specified by the `entityId`.
+    /// @dev To indicate the entire call should revert, the function MUST revert.
+    /// @param entityId An identifier that routes the call to different internal implementations, should there
+    /// be more than one.
+    /// @param preExecHookData The context returned by its associated pre execution hook.
+    function postExecutionHook(uint32 entityId, bytes calldata preExecHookData) external;
+}
+
+interface IValidationModule is IModule {
+    /// @notice Run the user operation validation function specified by the `entityId`.
+    /// @param entityId An identifier that routes the call to different internal implementations, should there
+    /// be more than one.
+    /// @param userOp The user operation.
+    /// @param userOpHash The user operation hash.
+    /// @return Packed validation data for validAfter (6 bytes), validUntil (6 bytes), and authorizer (20 bytes).
+    function validateUserOp(
+        uint32 entityId,
+        PackedUserOperation calldata userOp,
+        bytes32 userOpHash
+    ) external returns (uint256);
+
+    /// @notice Run the runtime validation function specified by the `entityId`.
+    /// @dev To indicate the entire call should revert, the function MUST revert.
+    /// @param account The account to validate for.
+    /// @param entityId An identifier that routes the call to different internal implementations, should there
+    /// be more than one.
+    /// @param sender The caller address.
+    /// @param value The call value.
+    /// @param data The calldata sent.
+    /// @param authorization Additional data for the validation function to use.
+    function validateRuntime(
+        address account,
+        uint32 entityId,
+        address sender,
+        uint256 value,
+        bytes calldata data,
+        bytes calldata authorization
+    ) external;
+
+    /// @notice Validates a signature using ERC-1271.
+    /// @dev To indicate the entire call should revert, the function MUST revert.
+    /// @param account The account to validate for.
+    /// @param entityId An identifier that routes the call to different internal implementations, should there
+    /// be more than one.
+    /// @param sender The address that sent the ERC-1271 request to the smart account.
+    /// @param hash The hash of the ERC-1271 request.
+    /// @param signature The signature of the ERC-1271 request.
+    /// @return The ERC-1271 `MAGIC_VALUE` if the signature is valid, or 0xFFFFFFFF if invalid.
+    function validateSignature(
+        address account,
+        uint32 entityId,
+        address sender,
+        bytes32 hash,
+        bytes calldata signature
+    ) external view returns (bytes4);
+}
+
+interface IValidationHookModule is IModule {
+    /// @notice Run the pre user operation validation hook specified by the `entityId`.
+    /// @dev Pre user operation validation hooks MUST NOT return an authorizer value other than 0 or 1.
+    /// @param entityId An identifier that routes the call to different internal implementations, should there
+    /// be more than one.
+    /// @param userOp The user operation.
+    /// @param userOpHash The user operation hash.
+    /// @return Packed validation data for validAfter (6 bytes), validUntil (6 bytes), and authorizer (20 bytes).
+    function preUserOpValidationHook(
+        uint32 entityId,
+        PackedUserOperation calldata userOp,
+        bytes32 userOpHash
+    ) external returns (uint256);
+
+    /// @notice Run the pre runtime validation hook specified by the `entityId`.
+    /// @dev To indicate the entire call should revert, the function MUST revert.
+    /// @param entityId An identifier that routes the call to different internal implementations, should there
+    /// be more than one.
+    /// @param sender The caller address.
+    /// @param value The call value.
+    /// @param data The calldata sent.
+    /// @param authorization Additional data for the hook to use.
+    function preRuntimeValidationHook(
+        uint32 entityId,
+        address sender,
+        uint256 value,
+        bytes calldata data,
+        bytes calldata authorization
+    ) external;
+
+    /// @notice Run the pre signature validation hook specified by the `entityId`.
+    /// @dev To indicate the call should revert, the function MUST revert.
+    /// @param entityId An identifier that routes the call to different internal implementations, should there
+    /// be more than one.
+    /// @param sender The caller address.
+    /// @param hash The hash of the message being signed.
+    /// @param signature The signature of the message.
+    function preSignatureValidationHook(
+        uint32 entityId,
+        address sender,
+        bytes32 hash,
+        bytes calldata signature
+    ) external view;
 }
