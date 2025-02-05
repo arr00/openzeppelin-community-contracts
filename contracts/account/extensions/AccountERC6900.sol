@@ -232,7 +232,7 @@ abstract contract AccountERC6900 is AccountCore, IModularAccount {
             }
         }
 
-        validationStorage.validationHooks.executePreValidationHooks();
+        validationStorage.validationHooks.executePreValidationHooks(authorization);
 
         IValidationModule(moduleEntity.module()).validateRuntime(
             address(this),
@@ -353,7 +353,7 @@ abstract contract AccountERC6900 is AccountCore, IModularAccount {
             revert("Unauthorized");
         }
 
-        validationStorage.validationHooks.executePreValidationHooks();
+        validationStorage.validationHooks.executePreValidationHooks("");
         preValidationExecutionHooksResults = validationStorage.executionHooks.executeExecutionPreHooks();
 
         return preValidationExecutionHooksResults;

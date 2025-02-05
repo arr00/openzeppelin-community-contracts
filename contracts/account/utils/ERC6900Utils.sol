@@ -103,12 +103,17 @@ library ERC6900Utils {
             );
     }
 
-    function executePreValidationHooks(EnumerableSet.Bytes32Set storage hooks) internal {
+    function executePreValidationHooks(EnumerableSet.Bytes32Set storage hooks, bytes memory authorization) internal {
         uint256 hooksLength = hooks.length();
+
+        bytes[] memory authorizations = new bytes[](hooksLength + 1);
+        if (authorization.length > 0) {
+            authorizations = abi.decode(authorization, (bytes[]));
+        }
 
         for (uint256 i = 0; i < hooksLength; ++i) {
             HookConfig hookConfig = HookConfig.wrap(bytes25(hooks.at(i)));
-            _executeValidationHook(hookConfig, "");
+            _executeValidationHook(hookConfig, authorizations[i]);
         }
     }
 
