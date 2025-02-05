@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 
-import {IModularAccount, ValidationFlags, ModuleEntity, ValidationConfig, ExecutionManifest, HookConfig, ManifestExecutionFunction, ManifestExecutionHook, IModule} from "contracts/interfaces/draft-IERC6900.sol";
+import {IModularAccount, PackedUserOperation, IValidationModule, Call, ValidationFlags, ModuleEntity, ValidationConfig, ExecutionManifest, HookConfig, ManifestExecutionFunction, ManifestExecutionHook, IModule} from "contracts/interfaces/draft-IERC6900.sol";
 import {EnumerableSet} from "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 import {AccountCore} from "../AccountCore.sol";
 import {ERC6900Utils} from "../utils/ERC6900Utils.sol";
@@ -160,7 +160,7 @@ abstract contract AccountERC6900 is AccountCore, IModularAccount {
                 revert("Account: hookUninstallData length does not match hooks length");
             }
 
-            // Assume uninstallation data is validation hook, then execution hooks. Following the reference impl
+            // Assume uninstallation data is validation hooks, then execution hooks. Following the reference impl
             // https://github.com/erc6900/reference-implementation/blob/c9b256cfd963a655179fa3cd9ea3f92c73cbfcdd/src/account/ModuleManagerInternals.sol#L289
             uint256 validationHooksLength = _validationStorage[validationFunction].validationHooks.length();
             for (uint256 i = 0; i < hooksLength; ++i) {
@@ -196,7 +196,79 @@ abstract contract AccountERC6900 is AccountCore, IModularAccount {
         uint256 value,
         bytes calldata data
     ) public payable virtual override withDirectValidation withExecutionHooks returns (bytes memory) {
+        if (target == address(this)) {
+            revert("Self call");
+        }
         return target.functionCallWithValue(data, value);
+    }
+
+    function executeBatch(
+        Call[] calldata calls
+    ) public payable virtual override withDirectValidation withExecutionHooks returns (bytes[] memory) {
+        uint256 length = calls.length;
+        bytes[] memory res = new bytes[](length);
+        for (uint256 i = 0; i < length; ++i) {
+            if (calls[i].target == address(this)) {
+                revert("Self call");
+            }
+            res[i] = calls[i].target.functionCallWithValue(calls[i].data, calls[i].value);
+        }
+
+        return res;
+    }
+
+    function executeWithRuntimeValidation(
+        bytes calldata data,
+        bytes calldata authorization
+    ) external payable returns (bytes memory) {
+        ModuleEntity moduleEntity = ModuleEntity.wrap(bytes24(authorization[:24]));
+        ValidationStorage storage validationStorage = _validationStorage[moduleEntity];
+
+        if (validationStorage.validationFlags.isGlobal()) {
+            if (!_executionStorage[bytes4(data[:4])].allowGlobalValidation) {
+                revert("Global validation not allowed");
+            }
+        } else {
+            if (!validationStorage.selectors.contains(bytes4(data[:4]))) {
+                revert("Validation not allowed");
+            }
+        }
+
+        validationStorage.validationHooks.executePreValidationHooks();
+
+        IValidationModule(moduleEntity.module()).validateRuntime(
+            address(this),
+            moduleEntity.entity(),
+            msg.sender,
+            msg.value,
+            data,
+            authorization
+        );
+
+        ERC6900Utils.PreHookResult[] memory preValidationExecutionHooksResults = validationStorage
+            .executionHooks
+            .executeExecutionPreHooks();
+
+        bytes memory res = address(this).functionCall(data);
+
+        preValidationExecutionHooksResults.executePostHooks();
+
+        return res;
+    }
+
+    function executeUserOp(PackedUserOperation calldata userOp, bytes32) public {
+        if (msg.sender != address(entryPoint())) {
+            revert("Not Entrypoint");
+        }
+
+        ModuleEntity userOpValidationFunction = ModuleEntity.wrap(bytes24(userOp.signature[:24]));
+        ERC6900Utils.PreHookResult[] memory preValidationExecutionHooksResults = _validationStorage[
+            userOpValidationFunction
+        ].executionHooks.executeExecutionPreHooks();
+
+        address(this).functionCall(userOp.callData);
+
+        preValidationExecutionHooksResults.executePostHooks();
     }
 
     fallback() external payable {
@@ -234,7 +306,7 @@ abstract contract AccountERC6900 is AccountCore, IModularAccount {
 
             ValidationStorage storage validationStorage = _validationStorage[moduleEntity];
             if (
-                !(_executionStorage[msg.sig].allowGlobalValidation && validationStorage.validationFlags.isGlobal()) &&
+                !(validationStorage.validationFlags.isGlobal() && _executionStorage[msg.sig].allowGlobalValidation) &&
                 !validationStorage.selectors.contains(msg.sig)
             ) {
                 revert("Unauthorized");
