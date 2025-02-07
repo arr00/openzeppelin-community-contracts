@@ -1,17 +1,16 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 
-import {IModularAccount, IExecutionHookModule, ModuleEntity, ValidationConfig, ValidationFlags, IValidationHookModule, ExecutionManifest, HookConfig, ManifestExecutionFunction, ManifestExecutionHook, IModule} from "contracts/interfaces/draft-IERC6900.sol";
 import {EnumerableSet} from "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
+import {Packing} from "@openzeppelin/contracts/utils/Packing.sol";
+import {IModularAccount, IExecutionHookModule, ModuleEntity, ValidationConfig, ValidationFlags, IValidationHookModule, ExecutionManifest, HookConfig, ManifestExecutionFunction, ManifestExecutionHook, IModule} from "contracts/interfaces/draft-IERC6900.sol";
 
 library ERC6900Utils {
-    struct PreHookResult {
+    using EnumerableSet for EnumerableSet.Bytes32Set;
+    struct PostHooksExecutionInfo {
         HookConfig hookConfig;
         bytes data;
     }
-
-    using EnumerableSet for EnumerableSet.Bytes32Set;
-    using ERC6900Utils for *;
 
     function module(ValidationConfig validationConfig) internal pure returns (address) {
         return address(bytes20(ValidationConfig.unwrap(validationConfig)));
@@ -73,30 +72,30 @@ library ERC6900Utils {
 
     function executeExecutionPreHooks(
         EnumerableSet.Bytes32Set storage hooks
-    ) internal returns (PreHookResult[] memory res) {
+    ) internal returns (PostHooksExecutionInfo[] memory res) {
         uint256 hooksLength = hooks.length();
 
         for (uint256 i = 0; i < hooksLength; ++i) {
             HookConfig hookConfig = HookConfig.wrap(bytes25(hooks.at(i)));
-            if (hookConfig.hasPre()) {
-                if (hookConfig.hasPost()) {
+            if (hasPre(hookConfig)) {
+                if (hasPost(hookConfig)) {
                     // Save return data
-                    res[i] = PreHookResult(hookConfig, _executePreExecutionHook(hookConfig));
+                    res[i] = PostHooksExecutionInfo(hookConfig, _executePreExecutionHook(hookConfig));
                 } else {
                     // No post. Not necessary to save.
                     _executePreExecutionHook(hookConfig);
                 }
-            } else if (hookConfig.hasPost()) {
+            } else if (hasPost(hookConfig)) {
                 // Must cache for running post
-                res[i] = PreHookResult(hookConfig, "");
+                res[i] = PostHooksExecutionInfo(hookConfig, "");
             }
         }
     }
 
     function _executePreExecutionHook(HookConfig hookConfig) private returns (bytes memory) {
         return
-            IExecutionHookModule(hookConfig.module()).preExecutionHook(
-                hookConfig.entity(),
+            IExecutionHookModule(module(hookConfig)).preExecutionHook(
+                entity(hookConfig),
                 msg.sender,
                 msg.value,
                 msg.data
@@ -118,8 +117,8 @@ library ERC6900Utils {
     }
 
     function _executeValidationHook(HookConfig hookConfig, bytes memory authorization) private {
-        IValidationHookModule(hookConfig.module()).preRuntimeValidationHook(
-            hookConfig.entity(),
+        IValidationHookModule(module(hookConfig)).preRuntimeValidationHook(
+            entity(hookConfig),
             msg.sender,
             msg.value,
             msg.data,
@@ -127,13 +126,13 @@ library ERC6900Utils {
         );
     }
 
-    function executePostHooks(PreHookResult[] memory preHookResults) internal {
+    function executePostHooks(PostHooksExecutionInfo[] memory preHookResults) internal {
         uint256 hooksLength = preHookResults.length;
 
         for (uint256 i = hooksLength; i > 0; --i) {
-            if (preHookResults[i].hookConfig.hasPost()) {
-                IExecutionHookModule(preHookResults[i].hookConfig.module()).postExecutionHook(
-                    preHookResults[i].hookConfig.entity(),
+            if (hasPost(preHookResults[i].hookConfig)) {
+                IExecutionHookModule(module(preHookResults[i].hookConfig)).postExecutionHook(
+                    entity(preHookResults[i].hookConfig),
                     preHookResults[i].data
                 );
             }

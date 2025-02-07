@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 
-import {IModularAccount, IValidationHookModule, PackedUserOperation, IValidationModule, Call, ValidationFlags, ModuleEntity, ValidationConfig, ExecutionManifest, HookConfig, ManifestExecutionFunction, ManifestExecutionHook, IModule} from "contracts/interfaces/draft-IERC6900.sol";
+import {IModularAccount, IModularAccountView, ValidationDataView, ExecutionDataView, IValidationHookModule, PackedUserOperation, IValidationModule, Call, ValidationFlags, ModuleEntity, ValidationConfig, ExecutionManifest, HookConfig, ManifestExecutionFunction, ManifestExecutionHook, IModule} from "contracts/interfaces/draft-IERC6900.sol";
 import {EnumerableSet} from "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
+import {IAccountExecute} from "@openzeppelin/contracts/interfaces/draft-IERC4337.sol";
 import {AccountCore} from "../AccountCore.sol";
 import {ERC6900Utils} from "../utils/ERC6900Utils.sol";
 import {Address} from "@openzeppelin/contracts/utils/Address.sol";
 
-abstract contract AccountERC6900 is AccountCore, IModularAccount {
+abstract contract AccountERC6900 is AccountCore, IAccountExecute, IModularAccountView, IModularAccount {
     using EnumerableSet for EnumerableSet.Bytes32Set;
     using ERC6900Utils for *;
     using Address for address;
@@ -46,11 +47,25 @@ abstract contract AccountERC6900 is AccountCore, IModularAccount {
     mapping(bytes4 => uint256) private _supportedInterfaceIds;
     mapping(ModuleEntity => ValidationStorage) private _validationStorage;
 
+    modifier validatedAndHooked() {
+        ERC6900Utils.PostHooksExecutionInfo[] memory postValidationExecutionHooks = _runDirectValidation(msg.sig);
+        ERC6900Utils.PostHooksExecutionInfo[] memory postSelectorExecutionHooks = _runExecutionHooks(msg.sig);
+
+        _;
+
+        postSelectorExecutionHooks.executePostHooks();
+        postValidationExecutionHooks.executePostHooks();
+    }
+
+    fallback() external payable {
+        _fallback();
+    }
+
     function installExecution(
         address module,
         ExecutionManifest calldata manifest,
         bytes calldata installData
-    ) public override wrapFunction {
+    ) public override validatedAndHooked {
         if (module == address(0)) revert("Module is 0");
 
         uint256 executionFunctionLength = manifest.executionFunctions.length;
@@ -79,7 +94,7 @@ abstract contract AccountERC6900 is AccountCore, IModularAccount {
         address module,
         ExecutionManifest calldata manifest,
         bytes calldata uninstallData
-    ) public override wrapFunction {
+    ) public override validatedAndHooked {
         if (module == address(0)) revert("Module is 0");
 
         uint256 interfaceIdsLength = manifest.interfaceIds.length;
@@ -112,7 +127,10 @@ abstract contract AccountERC6900 is AccountCore, IModularAccount {
         bytes4[] calldata selectors,
         bytes calldata installData,
         bytes[] calldata hooks
-    ) public override wrapFunction {
+    ) public override validatedAndHooked {
+        // What if there is an existing validation function with the same module and entity? Not addressed by the ERC.
+        // Do we need to ensure there are no
+
         ModuleEntity moduleEntity = validationConfig.moduleEntity();
 
         _validationStorage[moduleEntity].validationFlags = validationConfig.flags();
@@ -147,7 +165,7 @@ abstract contract AccountERC6900 is AccountCore, IModularAccount {
         ModuleEntity validationFunction,
         bytes calldata uninstallData,
         bytes[] calldata hookUninstallData
-    ) public override wrapFunction {
+    ) public override validatedAndHooked {
         _validationStorage[validationFunction].validationFlags = ValidationFlags.wrap(0);
         _validationStorage[validationFunction].selectors.clear();
 
@@ -195,14 +213,16 @@ abstract contract AccountERC6900 is AccountCore, IModularAccount {
         address target,
         uint256 value,
         bytes calldata data
-    ) public payable virtual override wrapFunction returns (bytes memory) {
+    ) public payable virtual override validatedAndHooked returns (bytes memory) {
         if (target == address(this)) {
             revert("Self call");
         }
         return target.functionCallWithValue(data, value);
     }
 
-    function executeBatch(Call[] calldata calls) public payable virtual override wrapFunction returns (bytes[] memory) {
+    function executeBatch(
+        Call[] calldata calls
+    ) public payable virtual override validatedAndHooked returns (bytes[] memory) {
         uint256 length = calls.length;
         bytes[] memory res = new bytes[](length);
         for (uint256 i = 0; i < length; ++i) {
@@ -218,7 +238,7 @@ abstract contract AccountERC6900 is AccountCore, IModularAccount {
     function executeWithRuntimeValidation(
         bytes calldata data,
         bytes calldata authorization
-    ) external payable returns (bytes memory) {
+    ) public payable returns (bytes memory) {
         ModuleEntity moduleEntity = ModuleEntity.wrap(bytes24(authorization[:24]));
         ValidationStorage storage validationStorage = _validationStorage[moduleEntity];
 
@@ -243,7 +263,7 @@ abstract contract AccountERC6900 is AccountCore, IModularAccount {
             authorization
         );
 
-        ERC6900Utils.PreHookResult[] memory preValidationExecutionHooksResults = validationStorage
+        ERC6900Utils.PostHooksExecutionInfo[] memory preValidationExecutionHooksResults = validationStorage
             .executionHooks
             .executeExecutionPreHooks();
 
@@ -254,19 +274,20 @@ abstract contract AccountERC6900 is AccountCore, IModularAccount {
         return res;
     }
 
-    function executeUserOp(PackedUserOperation calldata userOp, bytes32) public {
+    function executeUserOp(PackedUserOperation calldata userOp, bytes32) public virtual override {
         if (msg.sender != address(entryPoint())) {
             revert("Not Entrypoint");
         }
 
         ModuleEntity userOpValidationFunction = ModuleEntity.wrap(bytes24(userOp.signature[:24]));
-        ERC6900Utils.PreHookResult[] memory preValidationExecutionHooksResults = _validationStorage[
+        ERC6900Utils.PostHooksExecutionInfo[] memory preValidationExecutionHooksResults = _validationStorage[
             userOpValidationFunction
         ].executionHooks.executeExecutionPreHooks();
 
         // Should we be running the user op validation function?
 
-        address(this).functionCall(userOp.callData);
+        // Remove `executeUserOp` selector from callData
+        address(this).functionCall(userOp.callData[4:]);
 
         preValidationExecutionHooksResults.executePostHooks();
     }
@@ -306,11 +327,59 @@ abstract contract AccountERC6900 is AccountCore, IModularAccount {
             );
     }
 
-    fallback() external payable {
-        _fallback();
+    function getExecutionData(bytes4 selector) public view virtual override returns (ExecutionDataView memory) {
+        uint256 hooksLength = _executionStorage[selector].executionHooks.length();
+        HookConfig[] memory hooks = new HookConfig[](hooksLength);
+        for (uint256 i = 0; i < hooksLength; ++i) {
+            hooks[i] = HookConfig.wrap(bytes25(_executionStorage[selector].executionHooks.at(i)));
+        }
+
+        return
+            ExecutionDataView({
+                module: _executionStorage[selector].module,
+                skipRuntimeValidation: _executionStorage[selector].skipRuntimeValidation,
+                allowGlobalValidation: _executionStorage[selector].allowGlobalValidation,
+                executionHooks: hooks
+            });
     }
 
-    function _fallback() internal wrapFunction {
+    function getValidationData(
+        ModuleEntity validationFunction
+    ) public view virtual override returns (ValidationDataView memory) {
+        uint256 validationHooksLength = _validationStorage[validationFunction].validationHooks.length();
+        HookConfig[] memory validationHooks = new HookConfig[](validationHooksLength);
+        for (uint256 i = 0; i < validationHooksLength; ++i) {
+            validationHooks[i] = HookConfig.wrap(bytes25(_validationStorage[validationFunction].validationHooks.at(i)));
+        }
+
+        uint256 executionHooksLength = _validationStorage[validationFunction].executionHooks.length();
+        HookConfig[] memory executionHooks = new HookConfig[](executionHooksLength);
+        for (uint256 i = 0; i < executionHooksLength; ++i) {
+            executionHooks[i] = HookConfig.wrap(bytes25(_validationStorage[validationFunction].executionHooks.at(i)));
+        }
+
+        uint256 selectorsLength = _validationStorage[validationFunction].selectors.length();
+        bytes4[] memory selectors = new bytes4[](selectorsLength);
+        for (uint256 i = 0; i < selectorsLength; ++i) {
+            selectors[i] = bytes4(_validationStorage[validationFunction].selectors.at(i));
+        }
+
+        return
+            ValidationDataView({
+                validationFlags: _validationStorage[validationFunction].validationFlags,
+                validationHooks: validationHooks,
+                executionHooks: executionHooks,
+                selectors: selectors
+            });
+    }
+
+    /// @inheritdoc IModularAccount
+    function accountId() public view virtual returns (string memory) {
+        // vendorname.accountname.semver
+        return "@openzeppelin/community-contracts.AccountERC6900.v0.0.0";
+    }
+
+    function _fallback() internal validatedAndHooked {
         ExecutionStorage storage executionStorage = _executionStorage[msg.sig];
         if (executionStorage.module == address(0)) {
             revert("Account: function not found");
@@ -318,28 +387,18 @@ abstract contract AccountERC6900 is AccountCore, IModularAccount {
         executionStorage.module.functionCall(msg.data);
     }
 
-    modifier wrapFunction() {
-        ERC6900Utils.PreHookResult[] memory postValidationHooks = _runDirectValidation(msg.sig);
-        ERC6900Utils.PreHookResult[] memory postExecutionHooks = _runExecutionHooks(msg.sig);
-
-        _;
-
-        postExecutionHooks.executePostHooks();
-        postValidationHooks.executePostHooks();
-    }
-
-    function _runExecutionHooks(bytes4 selector) internal returns (ERC6900Utils.PreHookResult[] memory) {
+    function _runExecutionHooks(bytes4 selector) internal returns (ERC6900Utils.PostHooksExecutionInfo[] memory) {
         return _executionStorage[selector].executionHooks.executeExecutionPreHooks();
     }
 
-    function _runDirectValidation(bytes4 selector) internal returns (ERC6900Utils.PreHookResult[] memory) {
-        ERC6900Utils.PreHookResult[] memory preValidationExecutionHooksResults;
+    function _runDirectValidation(bytes4 selector) internal returns (ERC6900Utils.PostHooksExecutionInfo[] memory) {
+        ERC6900Utils.PostHooksExecutionInfo[] memory postHooksExecutionInfo;
 
         if (
             msg.sender == address(this) ||
             msg.sender == address(entryPoint()) ||
             _executionStorage[selector].skipRuntimeValidation
-        ) return preValidationExecutionHooksResults;
+        ) return postHooksExecutionInfo;
 
         ModuleEntity moduleEntity = ModuleEntity.wrap(
             bytes24(bytes20(msg.sender)) | bytes24(uint192(type(uint32).max))
@@ -354,9 +413,9 @@ abstract contract AccountERC6900 is AccountCore, IModularAccount {
         }
 
         validationStorage.validationHooks.executePreValidationHooks("");
-        preValidationExecutionHooksResults = validationStorage.executionHooks.executeExecutionPreHooks();
+        postHooksExecutionInfo = validationStorage.executionHooks.executeExecutionPreHooks();
 
-        return preValidationExecutionHooksResults;
+        return postHooksExecutionInfo;
     }
 
     function _addExecutionFunction(
@@ -412,46 +471,6 @@ abstract contract AccountERC6900 is AccountCore, IModularAccount {
 
     function _removeInterfaceId(bytes4 interfaceId) internal {
         _supportedInterfaceIds[interfaceId] -= 1;
-    }
-
-    function _packExecutionHook(
-        address module,
-        ManifestExecutionHook calldata manifestExecutionHook
-    ) internal pure returns (bytes25) {
-        bytes1 flags = bytes1(
-            ((manifestExecutionHook.isPreHook ? 1 : 0) << 2) | ((manifestExecutionHook.isPostHook ? 1 : 0) << 1) | 1
-        );
-        return bytes25(bytes20(module)) | bytes5(bytes4(manifestExecutionHook.entityId)) | flags;
-    }
-
-    function _unpackValidationConfig(
-        ValidationConfig validationConfig
-    )
-        internal
-        pure
-        returns (
-            ModuleEntity moduleEntity,
-            bool isGlobalFlag,
-            bool isSignatureValidationFlag,
-            bool isUserOpValidationFlag
-        )
-    {
-        bytes25 config = ValidationConfig.unwrap(validationConfig);
-        moduleEntity = ModuleEntity.wrap(bytes24(config >> 8));
-
-        bytes1 globalFlagBit = bytes1(uint8(1 << 2));
-        bytes1 signatureValidationFlagBit = bytes1(uint8(1 << 1));
-        bytes1 userOpValidationFlagBit = bytes1(uint8(1));
-
-        isGlobalFlag = (config & globalFlagBit) != 0;
-        isSignatureValidationFlag = (config & signatureValidationFlagBit) != 0;
-        isUserOpValidationFlag = (config & userOpValidationFlagBit) != 0;
-    }
-
-    function _addValidationSelector(ModuleEntity moduleEntity, bytes4 selector) internal {
-        if (!_validationStorage[moduleEntity].selectors.add(selector)) {
-            revert("Validation selector already exists");
-        }
     }
 
     function _removeValidationSelector(ModuleEntity moduleEntity, bytes4 selector) internal {
@@ -510,6 +529,46 @@ abstract contract AccountERC6900 is AccountCore, IModularAccount {
             try IModule(module).onInstall(onInstallData) {} catch {
                 revert("onInstall failed");
             }
+        }
+    }
+
+    function _packExecutionHook(
+        address module,
+        ManifestExecutionHook calldata manifestExecutionHook
+    ) internal pure returns (bytes25) {
+        bytes1 flags = bytes1(
+            ((manifestExecutionHook.isPreHook ? 1 : 0) << 2) | ((manifestExecutionHook.isPostHook ? 1 : 0) << 1) | 1
+        );
+        return bytes25(bytes20(module)) | bytes5(bytes4(manifestExecutionHook.entityId)) | flags;
+    }
+
+    function _unpackValidationConfig(
+        ValidationConfig validationConfig
+    )
+        internal
+        pure
+        returns (
+            ModuleEntity moduleEntity,
+            bool isGlobalFlag,
+            bool isSignatureValidationFlag,
+            bool isUserOpValidationFlag
+        )
+    {
+        bytes25 config = ValidationConfig.unwrap(validationConfig);
+        moduleEntity = ModuleEntity.wrap(bytes24(config >> 8));
+
+        bytes1 globalFlagBit = bytes1(uint8(1 << 2));
+        bytes1 signatureValidationFlagBit = bytes1(uint8(1 << 1));
+        bytes1 userOpValidationFlagBit = bytes1(uint8(1));
+
+        isGlobalFlag = (config & globalFlagBit) != 0;
+        isSignatureValidationFlag = (config & signatureValidationFlagBit) != 0;
+        isUserOpValidationFlag = (config & userOpValidationFlagBit) != 0;
+    }
+
+    function _addValidationSelector(ModuleEntity moduleEntity, bytes4 selector) internal {
+        if (!_validationStorage[moduleEntity].selectors.add(selector)) {
+            revert("Validation selector already exists");
         }
     }
 }
