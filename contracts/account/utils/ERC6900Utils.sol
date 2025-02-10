@@ -48,6 +48,14 @@ library ERC6900Utils {
         return uint32(uint200(HookConfig.unwrap(config)) >> 8);
     }
 
+    function toBytes32(HookConfig self) internal pure returns (bytes32) {
+        return bytes32(HookConfig.unwrap(self));
+    }
+
+    function toHookConfig(bytes32 self) internal pure returns (HookConfig) {
+        return HookConfig.wrap(bytes25(self));
+    }
+
     function moduleEntity(ValidationConfig validationConfig) internal pure returns (ModuleEntity) {
         return ModuleEntity.wrap(bytes24(ValidationConfig.unwrap(validationConfig)));
     }
@@ -130,11 +138,9 @@ library ERC6900Utils {
         uint256 hooksLength = preHookResults.length;
 
         for (uint256 i = hooksLength; i > 0; --i) {
-            if (hasPost(preHookResults[i].hookConfig)) {
-                IExecutionHookModule(module(preHookResults[i].hookConfig)).postExecutionHook(
-                    entity(preHookResults[i].hookConfig),
-                    preHookResults[i].data
-                );
+            HookConfig hookConfig = preHookResults[i].hookConfig;
+            if (hasPost(hookConfig)) {
+                IExecutionHookModule(module(hookConfig)).postExecutionHook(entity(hookConfig), preHookResults[i].data);
             }
         }
     }
