@@ -24,17 +24,19 @@ type ValidationConfig is bytes25;
 // 0b_______C // isUserOpValidation
 type ValidationFlags is uint8;
 
-/// @dev A packed representation of a hook function and its associated flags.
-/// Consists of the following, left-aligned:
-/// Module address: 20 bytes
-/// Entity ID:      4 bytes
-/// Flags:          1 byte
-///
-/// Hook flags layout:
-/// 0b00000___ // unused
-/// 0b_____A__ // hasPre (exec only)
-/// 0b______B_ // hasPost (exec only)
-/// 0b_______C // hook type (0 for exec, 1 for validation)
+/**
+ * @dev A packed representation of a hook function and its associated flags.
+ * Consists of the following, left-aligned:
+ * Module address: 20 bytes
+ * Entity ID:      4 bytes
+ * Flags:          1 byte
+ *
+ * Hook flags layout:
+ * 0b00000___ // unused
+ * 0b_____A__ // hasPre (exec only)
+ * 0b______B_ // hasPost (exec only)
+ * 0b_______C // hook type (0 for exec, 1 for validation)
+ */
 type HookConfig is bytes25;
 
 struct Call {
@@ -46,6 +48,15 @@ struct Call {
     bytes data;
 }
 
+struct ExecutionManifest {
+    // Execution functions defined in this module to be installed on the MSCA.
+    ManifestExecutionFunction[] executionFunctions;
+    ManifestExecutionHook[] executionHooks;
+    // List of ERC-165 interface IDs to add to account to support introspection checks. This MUST NOT include
+    // IModule's interface ID.
+    bytes4[] interfaceIds;
+}
+
 struct ManifestExecutionFunction {
     // The selector to install.
     bytes4 executionSelector;
@@ -54,21 +65,11 @@ struct ManifestExecutionFunction {
     // If true, the function can be validated by a global validation function.
     bool allowGlobalValidation;
 }
-
 struct ManifestExecutionHook {
     bytes4 executionSelector;
     uint32 entityId;
     bool isPreHook;
     bool isPostHook;
-}
-
-struct ExecutionManifest {
-    // Execution functions defined in this module to be installed on the MSCA.
-    ManifestExecutionFunction[] executionFunctions;
-    ManifestExecutionHook[] executionHooks;
-    // List of ERC-165 interface IDs to add to account to support introspection checks. This MUST NOT include
-    // IModule's interface ID.
-    bytes4[] interfaceIds;
 }
 
 /// @dev Represents data associated with a specific function selector.
@@ -181,6 +182,20 @@ interface IModularAccount {
     /// names MUST NOT contain a period character.
     /// @return The account ID.
     function accountId() external view returns (string memory);
+}
+
+interface IModularAccountView {
+    /// @notice Get the execution data for a selector.
+    /// @dev If the selector is a native function, the module address will be the address of the account.
+    /// @param selector The selector to get the data for.
+    /// @return The execution data for this selector.
+    function getExecutionData(bytes4 selector) external view returns (ExecutionDataView memory);
+
+    /// @notice Get the validation data for a validation function.
+    /// @dev If the selector is a native function, the module address will be the address of the account.
+    /// @param validationFunction The validation function to get the data for.
+    /// @return The validation data for this validation function.
+    function getValidationData(ModuleEntity validationFunction) external view returns (ValidationDataView memory);
 }
 
 interface IModule is IERC165 {
@@ -320,18 +335,4 @@ interface IValidationHookModule is IModule {
         bytes32 hash,
         bytes calldata signature
     ) external view;
-}
-
-interface IModularAccountView {
-    /// @notice Get the execution data for a selector.
-    /// @dev If the selector is a native function, the module address will be the address of the account.
-    /// @param selector The selector to get the data for.
-    /// @return The execution data for this selector.
-    function getExecutionData(bytes4 selector) external view returns (ExecutionDataView memory);
-
-    /// @notice Get the validation data for a validation function.
-    /// @dev If the selector is a native function, the module address will be the address of the account.
-    /// @param validationFunction The validation function to get the data for.
-    /// @return The validation data for this validation function.
-    function getValidationData(ModuleEntity validationFunction) external view returns (ValidationDataView memory);
 }

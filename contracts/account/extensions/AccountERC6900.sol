@@ -220,7 +220,8 @@ abstract contract AccountERC6900 is AccountCore, IAccountExecute, IModularAccoun
         if (target == address(this)) {
             revert("Self call");
         }
-        return target.functionCallWithValue(data, value);
+        (bool success, bytes memory res) = target.call{value: value}(data);
+        return Address.verifyCallResult(success, res);
     }
 
     function executeBatch(
@@ -233,7 +234,9 @@ abstract contract AccountERC6900 is AccountCore, IAccountExecute, IModularAccoun
             if (calls[i].target == address(this)) {
                 revert("Self call");
             }
-            res[i] = calls[i].target.functionCallWithValue(calls[i].data, calls[i].value);
+
+            (bool success, bytes memory res_) = calls[i].target.call{value: calls[i].value}(calls[i].data);
+            res[i] = Address.verifyCallResult(success, res_);
         }
 
         return res;
