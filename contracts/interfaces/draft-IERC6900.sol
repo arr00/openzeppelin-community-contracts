@@ -16,9 +16,10 @@ type ModuleEntity is bytes24;
 /**
  * @dev A packed representation of a validation function and its associated flags.
  * Consists of the following, left-aligned:
- * Module address:     20 bytes
- * Entity ID:          4 bytes
- * ValidationFlags:    1 byte
+ *
+ * * Module address:     20 bytes
+ * * Entity ID:          4 bytes
+ * * ValidationFlags:    1 byte
  */
 type ValidationConfig is bytes25;
 
@@ -101,11 +102,7 @@ struct ExecutionDataView {
 }
 
 struct ValidationDataView {
-    // ValidationFlags layout:
-    // 0b00000___ // unused
-    // 0b_____A__ // isGlobal
-    // 0b______B_ // isSignatureValidation
-    // 0b_______C // isUserOpValidation
+    // The validation flags for this validation function.
     ValidationFlags validationFlags;
     // The validation hooks for this validation function.
     HookConfig[] validationHooks;

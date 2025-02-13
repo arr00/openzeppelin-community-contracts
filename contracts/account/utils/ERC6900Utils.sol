@@ -76,12 +76,6 @@ library ERC6900Utils {
         return uint32(uint192(ModuleEntity.unwrap(moduleEntity_)));
     }
 
-    function clear(EnumerableSet.Bytes32Set storage set) internal {
-        for (uint256 i = set.length(); i > 0; --i) {
-            set.remove(set.at(i - 1));
-        }
-    }
-
     function executeExecutionPreHooks(
         EnumerableSet.Bytes32Set storage hooks
     ) internal returns (PostHooksExecutionInfo[] memory res) {
