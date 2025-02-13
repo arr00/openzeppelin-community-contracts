@@ -32,6 +32,10 @@ library ERC6900Utils {
         return uint8(ValidationFlags.unwrap(validationFlags)) & (1 << 1) != 0;
     }
 
+    function isUserOpValidation(ValidationFlags validationFlags) internal pure returns (bool) {
+        return uint8(ValidationFlags.unwrap(validationFlags)) & 1 != 0;
+    }
+
     function hasPre(HookConfig config) internal pure returns (bool) {
         return uint200(HookConfig.unwrap(config)) & (1 << 2) != 0;
     }

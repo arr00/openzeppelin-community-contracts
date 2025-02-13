@@ -246,6 +246,9 @@ abstract contract AccountERC6900 is AccountCore, IAccountExecute, IModularAccoun
         bytes calldata data,
         bytes calldata authorization
     ) public payable returns (bytes memory) {
+        if (authorization.length < 24) {
+            revert("Authorization data too short");
+        }
         ModuleEntity moduleEntity = ModuleEntity.wrap(bytes24(authorization[:24]));
         ValidationStorage storage validationStorage = _validationStorage[moduleEntity];
 
@@ -292,6 +295,9 @@ abstract contract AccountERC6900 is AccountCore, IAccountExecute, IModularAccoun
     }
 
     function isValidSignature(bytes32 hash, bytes calldata signature) public view returns (bytes4) {
+        if (signature.length < 24) {
+            revert("Signature too short");
+        }
         bytes calldata authorization = signature[24:];
 
         ModuleEntity moduleEntity = ModuleEntity.wrap(bytes24(signature));
@@ -539,9 +545,90 @@ abstract contract AccountERC6900 is AccountCore, IAccountExecute, IModularAccoun
         }
     }
 
-    function _validateUserOp(PackedUserOperation calldata, bytes32) internal virtual override returns (uint256) {
-        // TODO: Implement user op validation. How are post execution hooks called. TSTORE?
-        return 0;
+    function _validateUserOp(
+        PackedUserOperation calldata userOp,
+        bytes32 userOpHash
+    ) internal virtual override returns (uint256) {
+        ModuleEntity validationFunc = ModuleEntity.wrap(bytes24(userOp.signature[:24]));
+        ValidationStorage storage validationStorage = _validationStorage[validationFunc];
+
+        if (!validationStorage.validationFlags.isUserOpValidation()) {
+            revert("Account: validation not applicable to user op");
+        }
+
+        bytes4 selector = bytes4(userOp.callData[:4]);
+
+        if (validationStorage.executionHooks.length() > 0 && selector != IAccountExecute.executeUserOp.selector) {
+            revert("Account: user op execution hooks will only execute during executeUserOp");
+        }
+
+        // Update selector to be the inner selector for further validation
+        if (selector == IAccountExecute.executeUserOp.selector) {
+            selector = bytes4(userOp.callData[4:8]);
+        }
+        if (
+            !(validationStorage.validationFlags.isGlobal() && _executionStorage[selector].allowGlobalValidation) &&
+            !validationStorage.selectors.contains(selector)
+        ) {
+            revert("Account: validation not allowed");
+        }
+
+        uint256 validationHooksLength = validationStorage.validationHooks.length();
+        bytes[] memory signatureSegments = abi.decode(userOp.signature[24:], (bytes[]));
+
+        if (signatureSegments.length != validationHooksLength + 1) {
+            revert("Account: signature segments length does not match hooks length");
+        }
+
+        PackedUserOperation memory userOpCopy = userOp;
+        uint256 currentValidationData = type(uint256).max;
+
+        for (uint256 i = 0; i < validationHooksLength; ++i) {
+            HookConfig hookConfig = validationStorage.validationHooks.at(i).toHookConfig();
+            userOpCopy.signature = signatureSegments[i];
+            currentValidationData = _updateUserOpValidationData(
+                currentValidationData,
+                IValidationHookModule(hookConfig.module()).preUserOpValidationHook(
+                    hookConfig.entity(),
+                    userOpCopy,
+                    userOpHash
+                )
+            );
+        }
+
+        userOpCopy.signature = signatureSegments[validationHooksLength];
+        currentValidationData = _updateUserOpValidationData(
+            currentValidationData,
+            IValidationModule(validationFunc.module()).validateUserOp(validationFunc.entity(), userOp, userOpHash)
+        );
+
+        return currentValidationData;
+    }
+
+    function _updateUserOpValidationData(
+        uint256 currentValidationData,
+        uint256 newValidationData
+    ) internal pure returns (uint256) {
+        if (currentValidationData == type(uint256).max) return newValidationData;
+
+        uint48 currentValidUntil = uint48(currentValidationData >> 160);
+        uint48 newValidUntil = uint48(newValidationData >> 160);
+        uint48 validUntil;
+        unchecked {
+            // Valid until of 0 eq to no limit
+            validUntil = currentValidUntil - 1 < newValidUntil - 1 ? currentValidUntil : newValidUntil;
+        }
+
+        uint48 currentValidAfter = uint48(currentValidationData >> 208);
+        uint48 newValidAfter = uint48(newValidationData >> 208);
+        uint48 validAfter;
+        validAfter = currentValidAfter > newValidAfter ? currentValidAfter : newValidAfter;
+
+        return
+            (uint256(validAfter) << 208) |
+            (uint256(validUntil) << 160) |
+            uint160(currentValidationData) |
+            uint160(newValidationData);
     }
 
     function _packExecutionHook(
