@@ -2,13 +2,22 @@
 pragma solidity ^0.8.0;
 
 import {IModularAccount, IModularAccountView, ValidationDataView, ExecutionDataView, IValidationHookModule, PackedUserOperation, IValidationModule, Call, ValidationFlags, ModuleEntity, ValidationConfig, ExecutionManifest, HookConfig, ManifestExecutionFunction, ManifestExecutionHook, IModule} from "contracts/interfaces/draft-IERC6900.sol";
+import {IERC1271} from "@openzeppelin/contracts/interfaces/IERC1271.sol";
+import {ERC165} from "@openzeppelin/contracts/utils/introspection/ERC165.sol";
 import {EnumerableSet} from "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 import {IAccountExecute} from "@openzeppelin/contracts/interfaces/draft-IERC4337.sol";
 import {AccountCore} from "../AccountCore.sol";
 import {ERC6900Utils} from "../utils/ERC6900Utils.sol";
 import {Address} from "@openzeppelin/contracts/utils/Address.sol";
 
-abstract contract AccountERC6900 is AccountCore, IAccountExecute, IModularAccountView, IModularAccount {
+abstract contract AccountERC6900 is
+    ERC165,
+    AccountCore,
+    IAccountExecute,
+    IModularAccountView,
+    IModularAccount,
+    IERC1271
+{
     using EnumerableSet for EnumerableSet.Bytes32Set;
     using ERC6900Utils for *;
     using Address for address;
@@ -29,11 +38,6 @@ abstract contract AccountERC6900 is AccountCore, IAccountExecute, IModularAccoun
     }
 
     struct ValidationStorage {
-        // ValidationFlags layout:
-        // 0b00000___ // unused
-        // 0b_____A__ // isGlobal
-        // 0b______B_ // isSignatureValidation
-        // 0b_______C // isUserOpValidation
         ValidationFlags validationFlags;
         // The validation hooks for this validation function.
         EnumerableSet.Bytes32Set validationHooks;
@@ -61,6 +65,7 @@ abstract contract AccountERC6900 is AccountCore, IAccountExecute, IModularAccoun
         return _fallback();
     }
 
+    /// @inheritdoc IModularAccount
     function installExecution(
         address module,
         ExecutionManifest calldata manifest,
@@ -90,6 +95,7 @@ abstract contract AccountERC6900 is AccountCore, IAccountExecute, IModularAccoun
         emit ExecutionInstalled(module, manifest);
     }
 
+    /// @inheritdoc IModularAccount
     function uninstallExecution(
         address module,
         ExecutionManifest calldata manifest,
@@ -122,6 +128,7 @@ abstract contract AccountERC6900 is AccountCore, IAccountExecute, IModularAccoun
         emit ExecutionUninstalled(module, uninstallSuccessful, manifest);
     }
 
+    /// @inheritdoc IModularAccount
     function installValidation(
         ValidationConfig validationConfig,
         bytes4[] calldata selectors,
@@ -162,6 +169,7 @@ abstract contract AccountERC6900 is AccountCore, IAccountExecute, IModularAccoun
         emit ValidationInstalled(module, validationConfig.entity());
     }
 
+    /// @inheritdoc IModularAccount
     function uninstallValidation(
         ModuleEntity validationFunction,
         bytes calldata uninstallData,
@@ -212,6 +220,7 @@ abstract contract AccountERC6900 is AccountCore, IAccountExecute, IModularAccoun
         emit ValidationUninstalled(validationFunction.module(), validationFunction.entity(), uninstallSuccessful);
     }
 
+    /// @inheritdoc IModularAccount
     function execute(
         address target,
         uint256 value,
@@ -224,6 +233,7 @@ abstract contract AccountERC6900 is AccountCore, IAccountExecute, IModularAccoun
         return Address.verifyCallResult(success, res);
     }
 
+    /// @inheritdoc IModularAccount
     function executeBatch(
         Call[] calldata calls
     ) public payable virtual override validatedAndHooked returns (bytes[] memory) {
@@ -242,6 +252,7 @@ abstract contract AccountERC6900 is AccountCore, IAccountExecute, IModularAccoun
         return res;
     }
 
+    /// @inheritdoc IModularAccount
     function executeWithRuntimeValidation(
         bytes calldata data,
         bytes calldata authorization
@@ -282,6 +293,7 @@ abstract contract AccountERC6900 is AccountCore, IAccountExecute, IModularAccoun
         return res;
     }
 
+    /// @inheritdoc IAccountExecute
     function executeUserOp(PackedUserOperation calldata userOp, bytes32) public virtual override onlyEntryPoint {
         ModuleEntity userOpValidationFunction = ModuleEntity.wrap(bytes24(userOp.signature[:24]));
         ERC6900Utils.PostHooksExecutionInfo[] memory preValidationExecutionHooksResults = _validationStorage[
@@ -294,6 +306,7 @@ abstract contract AccountERC6900 is AccountCore, IAccountExecute, IModularAccoun
         preValidationExecutionHooksResults.executePostHooks();
     }
 
+    /// @inheritdoc IERC1271
     function isValidSignature(bytes32 hash, bytes calldata signature) public view returns (bytes4) {
         if (signature.length < 24) {
             revert("Signature too short");
@@ -332,6 +345,7 @@ abstract contract AccountERC6900 is AccountCore, IAccountExecute, IModularAccoun
             );
     }
 
+    /// @inheritdoc IModularAccountView
     function getExecutionData(bytes4 selector) public view virtual override returns (ExecutionDataView memory) {
         uint256 hooksLength = _executionStorage[selector].executionHooks.length();
         HookConfig[] memory hooks = new HookConfig[](hooksLength);
@@ -348,6 +362,7 @@ abstract contract AccountERC6900 is AccountCore, IAccountExecute, IModularAccoun
             });
     }
 
+    /// @inheritdoc IModularAccountView
     function getValidationData(
         ModuleEntity validationFunction
     ) public view virtual override returns (ValidationDataView memory) {
@@ -382,6 +397,14 @@ abstract contract AccountERC6900 is AccountCore, IAccountExecute, IModularAccoun
     function accountId() public view virtual returns (string memory) {
         // vendorname.accountname.semver
         return "@openzeppelin/community-contracts.AccountERC6900.v0.0.0";
+    }
+
+    /// @inheritdoc ERC165
+    function supportsInterface(bytes4 interfaceId) public view virtual override returns (bool) {
+        return
+            _supportedInterfaceIds[interfaceId] > 0 ||
+            type(IERC1271).interfaceId == interfaceId ||
+            super.supportsInterface(interfaceId);
     }
 
     function _fallback() internal validatedAndHooked returns (bytes memory) {
@@ -472,11 +495,11 @@ abstract contract AccountERC6900 is AccountCore, IAccountExecute, IModularAccoun
         ) revert("Hook does not exist");
     }
 
-    function _addInterfaceId(bytes4 interfaceId) internal {
+    function _addInterfaceId(bytes4 interfaceId) internal virtual {
         _supportedInterfaceIds[interfaceId] += 1;
     }
 
-    function _removeInterfaceId(bytes4 interfaceId) internal {
+    function _removeInterfaceId(bytes4 interfaceId) internal virtual {
         _supportedInterfaceIds[interfaceId] -= 1;
     }
 
