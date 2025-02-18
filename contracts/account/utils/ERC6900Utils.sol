@@ -24,6 +24,10 @@ library ERC6900Utils {
         return ValidationFlags.wrap(uint8(uint200(ValidationConfig.unwrap(validationConfig))));
     }
 
+    function moduleEntity(ValidationConfig validationConfig) internal pure returns (ModuleEntity) {
+        return ModuleEntity.wrap(bytes24(ValidationConfig.unwrap(validationConfig)));
+    }
+
     function isGlobal(ValidationFlags validationFlags) internal pure returns (bool) {
         return uint8(ValidationFlags.unwrap(validationFlags)) & (1 << 2) != 0;
     }
@@ -44,6 +48,10 @@ library ERC6900Utils {
         return uint200(HookConfig.unwrap(config)) & (1 << 1) != 0;
     }
 
+    function isValidationHook(HookConfig hookConfig) internal pure returns (bool) {
+        return (uint8(uint200(HookConfig.unwrap(hookConfig))) & 1) == 1;
+    }
+
     function module(HookConfig config) internal pure returns (address) {
         return address(bytes20(HookConfig.unwrap(config)));
     }
@@ -58,14 +66,6 @@ library ERC6900Utils {
 
     function toHookConfig(bytes32 self) internal pure returns (HookConfig) {
         return HookConfig.wrap(bytes25(self));
-    }
-
-    function moduleEntity(ValidationConfig validationConfig) internal pure returns (ModuleEntity) {
-        return ModuleEntity.wrap(bytes24(ValidationConfig.unwrap(validationConfig)));
-    }
-
-    function isValidationHook(HookConfig hookConfig) internal pure returns (bool) {
-        return (uint8(uint200(HookConfig.unwrap(hookConfig))) & 1) == 1;
     }
 
     function module(ModuleEntity moduleEntity_) internal pure returns (address) {
