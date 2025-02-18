@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 
-import {IModularAccount, IModularAccountView, ValidationDataView, ExecutionDataView, IValidationHookModule, PackedUserOperation, IValidationModule, Call, ValidationFlags, ModuleEntity, ValidationConfig, ExecutionManifest, HookConfig, ManifestExecutionFunction, ManifestExecutionHook, IModule} from "contracts/interfaces/draft-IERC6900.sol";
+import {IModularAccount, IExecutionHookModule, IModularAccountView, ValidationDataView, ExecutionDataView, IValidationHookModule, PackedUserOperation, IValidationModule, Call, ValidationFlags, ModuleEntity, ValidationConfig, ExecutionManifest, HookConfig, ManifestExecutionFunction, ManifestExecutionHook, IModule} from "contracts/interfaces/draft-IERC6900.sol";
 import {IERC1271} from "@openzeppelin/contracts/interfaces/IERC1271.sol";
 import {ERC165} from "@openzeppelin/contracts/utils/introspection/ERC165.sol";
 import {EnumerableSet} from "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
@@ -11,11 +11,11 @@ import {ERC6900Utils} from "../utils/ERC6900Utils.sol";
 import {Address} from "@openzeppelin/contracts/utils/Address.sol";
 
 abstract contract AccountERC6900 is
-    ERC165,
     AccountCore,
-    IAccountExecute,
+    ERC165,
     IModularAccountView,
     IModularAccount,
+    IAccountExecute,
     IERC1271
 {
     using EnumerableSet for EnumerableSet.Bytes32Set;
@@ -47,18 +47,25 @@ abstract contract AccountERC6900 is
         EnumerableSet.Bytes32Set selectors;
     }
 
+    struct PostExecutionHooksInfo {
+        HookConfig hookConfig;
+        bytes data;
+    }
+
     mapping(bytes4 => ExecutionStorage) private _executionStorage;
     mapping(bytes4 => uint256) private _supportedInterfaceIds;
     mapping(ModuleEntity => ValidationStorage) private _validationStorage;
 
     modifier validatedAndHooked() {
-        ERC6900Utils.PostHooksExecutionInfo[] memory postValidationExecutionHooks = _runDirectValidation(msg.sig);
-        ERC6900Utils.PostHooksExecutionInfo[] memory postSelectorExecutionHooks = _runSelectorExecutionHooks(msg.sig);
+        PostExecutionHooksInfo[] memory postValidationExecutionHooks = _runDirectValidation(msg.sig);
+        PostExecutionHooksInfo[] memory postSelectorExecutionHooks = _runPreExecutionHooks(
+            _executionStorage[msg.sig].executionHooks
+        );
 
         _;
 
-        postSelectorExecutionHooks.executePostHooks();
-        postValidationExecutionHooks.executePostHooks();
+        _runPostExecutionHooks(postSelectorExecutionHooks);
+        _runPostExecutionHooks(postValidationExecutionHooks);
     }
 
     fallback(bytes calldata) external payable virtual returns (bytes memory) {
@@ -80,7 +87,7 @@ abstract contract AccountERC6900 is
 
         uint256 executionHookLength = manifest.executionHooks.length;
         for (uint256 i = 0; i < executionHookLength; ++i) {
-            _addExecutionHook(module, manifest.executionHooks[i]);
+            _addSelectorExecutionHook(module, manifest.executionHooks[i]);
         }
 
         uint256 interfaceIdsLength = manifest.interfaceIds.length;
@@ -271,7 +278,7 @@ abstract contract AccountERC6900 is
             revert("Validation not allowed");
         }
 
-        validationStorage.validationHooks.executePreValidationHooks(authorization);
+        _runRuntimeValidationHooks(validationStorage.validationHooks, authorization);
 
         IValidationModule(moduleEntity.module()).validateRuntime(
             address(this),
@@ -282,13 +289,13 @@ abstract contract AccountERC6900 is
             authorization
         );
 
-        ERC6900Utils.PostHooksExecutionInfo[] memory preValidationExecutionHooksResults = validationStorage
-            .executionHooks
-            .executeExecutionPreHooks();
+        PostExecutionHooksInfo[] memory postValidationExecutionHooksInfo = _runPreExecutionHooks(
+            validationStorage.executionHooks
+        );
 
         bytes memory res = address(this).functionCall(data);
 
-        preValidationExecutionHooksResults.executePostHooks();
+        _runPostExecutionHooks(postValidationExecutionHooksInfo);
 
         return res;
     }
@@ -296,14 +303,14 @@ abstract contract AccountERC6900 is
     /// @inheritdoc IAccountExecute
     function executeUserOp(PackedUserOperation calldata userOp, bytes32) public virtual override onlyEntryPoint {
         ModuleEntity userOpValidationFunction = ModuleEntity.wrap(bytes24(userOp.signature[:24]));
-        ERC6900Utils.PostHooksExecutionInfo[] memory preValidationExecutionHooksResults = _validationStorage[
-            userOpValidationFunction
-        ].executionHooks.executeExecutionPreHooks();
+        PostExecutionHooksInfo[] memory postExecutionHooksInfo = _runPreExecutionHooks(
+            _validationStorage[userOpValidationFunction].executionHooks
+        );
 
         // Remove `executeUserOp` selector from callData
         address(this).functionCall(userOp.callData[4:]);
 
-        preValidationExecutionHooksResults.executePostHooks();
+        _runPostExecutionHooks(postExecutionHooksInfo);
     }
 
     /// @inheritdoc IERC1271
@@ -415,20 +422,89 @@ abstract contract AccountERC6900 is
         return executionStorage.module.functionCall(msg.data);
     }
 
-    function _runSelectorExecutionHooks(
-        bytes4 selector
-    ) internal virtual returns (ERC6900Utils.PostHooksExecutionInfo[] memory) {
-        return _executionStorage[selector].executionHooks.executeExecutionPreHooks();
+    /// MARK: Hook execution
+
+    /**
+     * @dev Run pre-execution hooks.
+     *
+     * Note: This function does not assert that a hook is an execution as it is enforced when installed.
+     */
+    function _runPreExecutionHooks(
+        EnumerableSet.Bytes32Set storage executionHooks
+    ) internal returns (PostExecutionHooksInfo[] memory res) {
+        uint256 hooksLength = executionHooks.length();
+
+        for (uint256 i = 0; i < hooksLength; ++i) {
+            HookConfig hookConfig = executionHooks.at(i).toHookConfig();
+            bool hasPost = hookConfig.hasPost();
+            if (hookConfig.hasPre()) {
+                if (hasPost) {
+                    // Save return data
+                    res[i] = PostExecutionHooksInfo(hookConfig, _runPreExecutionHook(hookConfig));
+                } else {
+                    // No post. Not necessary to save.
+                    _runPreExecutionHook(hookConfig);
+                }
+            } else if (hasPost) {
+                // Must cache for running post
+                res[i] = PostExecutionHooksInfo(hookConfig, "");
+            }
+        }
     }
 
-    function _runDirectValidation(bytes4 selector) internal returns (ERC6900Utils.PostHooksExecutionInfo[] memory) {
-        ERC6900Utils.PostHooksExecutionInfo[] memory postHooksExecutionInfo;
+    function _runPreExecutionHook(HookConfig hookConfig) internal returns (bytes memory) {
+        return
+            IExecutionHookModule(hookConfig.module()).preExecutionHook(
+                hookConfig.entity(),
+                msg.sender,
+                msg.value,
+                msg.data
+            );
+    }
 
+    function _runPostExecutionHooks(PostExecutionHooksInfo[] memory postExecutionHooksInfo) internal {
+        uint256 hooksLength = postExecutionHooksInfo.length;
+
+        for (uint256 i = hooksLength; i > 0; --i) {
+            HookConfig hookConfig = postExecutionHooksInfo[i - 1].hookConfig;
+            if (hookConfig.hasPost()) {
+                IExecutionHookModule(hookConfig.module()).postExecutionHook(
+                    hookConfig.entity(),
+                    postExecutionHooksInfo[i - 1].data
+                );
+            }
+        }
+    }
+
+    function _runRuntimeValidationHooks(EnumerableSet.Bytes32Set storage hooks, bytes memory authorization) internal {
+        uint256 hooksLength = hooks.length();
+
+        bytes[] memory authorizations = new bytes[](hooksLength + 1);
+        if (authorization.length > 0) {
+            authorizations = abi.decode(authorization, (bytes[]));
+        }
+
+        for (uint256 i = 0; i < hooksLength; ++i) {
+            HookConfig hookConfig = HookConfig.wrap(bytes25(hooks.at(i)));
+            IValidationHookModule(hookConfig.module()).preRuntimeValidationHook(
+                hookConfig.entity(),
+                msg.sender,
+                msg.value,
+                msg.data,
+                authorization
+            );
+        }
+    }
+
+    function _runDirectValidation(bytes4 selector) internal returns (PostExecutionHooksInfo[] memory) {
+        PostExecutionHooksInfo[] memory postExecutionHooksInfo;
+
+        // No further validation required
         if (
             msg.sender == address(this) ||
             msg.sender == address(entryPoint()) ||
             _executionStorage[selector].skipRuntimeValidation
-        ) return postHooksExecutionInfo;
+        ) return postExecutionHooksInfo;
 
         ModuleEntity moduleEntity = ModuleEntity.wrap(
             bytes24(bytes20(msg.sender)) | bytes24(uint192(type(uint32).max))
@@ -442,12 +518,16 @@ abstract contract AccountERC6900 is
             revert("Unauthorized");
         }
 
-        validationStorage.validationHooks.executePreValidationHooks("");
-        postHooksExecutionInfo = validationStorage.executionHooks.executeExecutionPreHooks();
+        // No authorization since it is a direct call
+        _runRuntimeValidationHooks(validationStorage.validationHooks, "");
+        postExecutionHooksInfo = _runPreExecutionHooks(validationStorage.executionHooks);
 
-        return postHooksExecutionInfo;
+        // Do NOT run validation function on the module.
+
+        return postExecutionHooksInfo;
     }
 
+    /// MARK: Start module management functions
     function _addExecutionFunction(
         address module,
         ManifestExecutionFunction calldata manifestExecutionFunction
@@ -476,7 +556,7 @@ abstract contract AccountERC6900 is
         delete _executionStorage[manifestExecutionFunction.executionSelector].allowGlobalValidation;
     }
 
-    function _addExecutionHook(address module, ManifestExecutionHook calldata manifestExecutionHook) internal {
+    function _addSelectorExecutionHook(address module, ManifestExecutionHook calldata manifestExecutionHook) internal {
         if (!manifestExecutionHook.isPreHook && !manifestExecutionHook.isPostHook) {
             revert("Account: execution hook must be pre or post");
         }
@@ -609,7 +689,7 @@ abstract contract AccountERC6900 is
         for (uint256 i = 0; i < validationHooksLength; ++i) {
             HookConfig hookConfig = validationStorage.validationHooks.at(i).toHookConfig();
             userOpCopy.signature = signatureSegments[i];
-            currentValidationData = _updateUserOpValidationData(
+            currentValidationData = _mergeUserOpValidationData(
                 currentValidationData,
                 IValidationHookModule(hookConfig.module()).preUserOpValidationHook(
                     hookConfig.entity(),
@@ -620,7 +700,7 @@ abstract contract AccountERC6900 is
         }
 
         userOpCopy.signature = signatureSegments[validationHooksLength];
-        currentValidationData = _updateUserOpValidationData(
+        currentValidationData = _mergeUserOpValidationData(
             currentValidationData,
             IValidationModule(validationFunc.module()).validateUserOp(validationFunc.entity(), userOp, userOpHash)
         );
@@ -628,7 +708,7 @@ abstract contract AccountERC6900 is
         return currentValidationData;
     }
 
-    function _updateUserOpValidationData(
+    function _mergeUserOpValidationData(
         uint256 currentValidationData,
         uint256 newValidationData
     ) internal pure returns (uint256) {
