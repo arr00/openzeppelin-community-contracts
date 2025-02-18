@@ -6,9 +6,9 @@ import {IERC1271} from "@openzeppelin/contracts/interfaces/IERC1271.sol";
 import {ERC165} from "@openzeppelin/contracts/utils/introspection/ERC165.sol";
 import {EnumerableSet} from "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 import {IAccountExecute} from "@openzeppelin/contracts/interfaces/draft-IERC4337.sol";
+import {Address} from "@openzeppelin/contracts/utils/Address.sol";
 import {AccountCore} from "../AccountCore.sol";
 import {ERC6900Utils} from "../utils/ERC6900Utils.sol";
-import {Address} from "@openzeppelin/contracts/utils/Address.sol";
 
 abstract contract AccountERC6900 is
     AccountCore,
@@ -182,9 +182,6 @@ abstract contract AccountERC6900 is
         bytes calldata uninstallData,
         bytes[] calldata hookUninstallData
     ) public virtual override validatedAndHooked {
-        _validationStorage[validationFunction].validationFlags = ValidationFlags.wrap(0);
-        _validationStorage[validationFunction].selectors.clear();
-
         bool uninstallSuccessful = true;
 
         if (hookUninstallData.length != 0) {
@@ -198,25 +195,21 @@ abstract contract AccountERC6900 is
             // Assume uninstallation data is validation hooks, then execution hooks. Following the reference impl
             // https://github.com/erc6900/reference-implementation/blob/c9b256cfd963a655179fa3cd9ea3f92c73cbfcdd/src/account/ModuleManagerInternals.sol#L289
 
-            for (uint256 i = 0; i < hooksLength; ++i) {
-                HookConfig hookConfig;
-                if (i < validationHooksLength) {
-                    hookConfig = _validationStorage[validationFunction].validationHooks.at(i).toHookConfig();
-                } else {
-                    hookConfig = _validationStorage[validationFunction]
-                        .executionHooks
-                        .at(i - validationHooksLength)
-                        .toHookConfig();
-                }
-
-                try IModule(hookConfig.module()).onUninstall(hookUninstallData[i]) {} catch {
-                    uninstallSuccessful = false;
-                }
-            }
+            bool validationHooksSuccessfullyUninstalled = _removeHooks(
+                _validationStorage[validationFunction].validationHooks,
+                hookUninstallData,
+                0
+            );
+            bool executionHooksSuccessfullyUninstalled = _removeHooks(
+                _validationStorage[validationFunction].executionHooks,
+                hookUninstallData,
+                validationHooksLength
+            );
+            uninstallSuccessful = validationHooksSuccessfullyUninstalled && executionHooksSuccessfullyUninstalled;
         }
 
-        _validationStorage[validationFunction].validationHooks.clear();
-        _validationStorage[validationFunction].executionHooks.clear();
+        _validationStorage[validationFunction].validationFlags = ValidationFlags.wrap(0);
+        _validationStorage[validationFunction].selectors.clear();
 
         if (uninstallData.length > 0) {
             try IModule(validationFunction.module()).onUninstall(uninstallData) {} catch {
@@ -293,7 +286,7 @@ abstract contract AccountERC6900 is
             validationStorage.executionHooks
         );
 
-        bytes memory res = address(this).functionCall(data);
+        bytes memory res = address(this).functionCallWithValue(data, msg.value);
 
         _runPostExecutionHooks(postValidationExecutionHooksInfo);
 
@@ -575,6 +568,25 @@ abstract contract AccountERC6900 is
         ) revert("Hook does not exist");
     }
 
+    function _removeHooks(
+        EnumerableSet.Bytes32Set storage hooks,
+        bytes[] memory hookUninstallData,
+        uint256 uninstallOffset
+    ) internal returns (bool) {
+        bool success = true;
+
+        uint256 hooksLength = hooks.length();
+        for (uint256 i = 0; i < hooksLength; ++i) {
+            HookConfig hookConfig = hooks.at(i).toHookConfig();
+            try IModule(hookConfig.module()).onUninstall(hookUninstallData[i + uninstallOffset]) {} catch {
+                success = false;
+            }
+        }
+        hooks.clear();
+
+        return success;
+    }
+
     function _addInterfaceId(bytes4 interfaceId) internal virtual {
         _supportedInterfaceIds[interfaceId] += 1;
     }
@@ -659,21 +671,23 @@ abstract contract AccountERC6900 is
             revert("Account: validation not applicable to user op");
         }
 
-        bytes4 selector = bytes4(userOp.callData[:4]);
+        {
+            bytes4 selector = bytes4(userOp.callData[:4]);
 
-        if (validationStorage.executionHooks.length() > 0 && selector != IAccountExecute.executeUserOp.selector) {
-            revert("Account: user op execution hooks will only execute during executeUserOp");
-        }
+            if (validationStorage.executionHooks.length() > 0 && selector != IAccountExecute.executeUserOp.selector) {
+                revert("Account: user op execution hooks will only execute during executeUserOp");
+            }
 
-        // Update selector to be the inner selector for further validation
-        if (selector == IAccountExecute.executeUserOp.selector) {
-            selector = bytes4(userOp.callData[4:8]);
-        }
-        if (
-            !(validationStorage.validationFlags.isGlobal() && _executionStorage[selector].allowGlobalValidation) &&
-            !validationStorage.selectors.contains(selector)
-        ) {
-            revert("Account: validation not allowed");
+            // Update selector to be the inner selector for further validation
+            if (selector == IAccountExecute.executeUserOp.selector) {
+                selector = bytes4(userOp.callData[4:8]);
+            }
+            if (
+                !(validationStorage.validationFlags.isGlobal() && _executionStorage[selector].allowGlobalValidation) &&
+                !validationStorage.selectors.contains(selector)
+            ) {
+                revert("Account: validation not allowed");
+            }
         }
 
         uint256 validationHooksLength = validationStorage.validationHooks.length();
