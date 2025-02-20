@@ -4,7 +4,7 @@ pragma solidity ^0.8.0;
 import {IValidationModule, PackedUserOperation} from "contracts/interfaces/draft-IERC6900.sol";
 import {ERC6900ModuleMock} from "./ERC6900ModuleMock.sol";
 
-contract ERC6900ExecutionHookModuleMock is ERC6900ModuleMock, IValidationModule {
+contract ERC6900ValidationModuleMock is ERC6900ModuleMock, IValidationModule {
     function validateUserOp(uint32, PackedUserOperation calldata, bytes32) public virtual override returns (uint256) {
         return 0;
     }

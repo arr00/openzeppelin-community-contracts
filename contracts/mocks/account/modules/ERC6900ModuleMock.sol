@@ -7,6 +7,7 @@ import {ERC165} from "@openzeppelin/contracts/utils/introspection/ERC165.sol";
 contract ERC6900ModuleMock is ERC165, IModule {
     event OnInstall(bytes data);
     event OnUninstall(bytes data);
+    event FallbackExecution(bytes4 selector, bytes data);
 
     function onInstall(bytes calldata data) public virtual override {
         emit OnInstall(data);
@@ -18,5 +19,9 @@ contract ERC6900ModuleMock is ERC165, IModule {
 
     function moduleId() public pure virtual override returns (string memory) {
         return "ERC6900ModuleMock";
+    }
+
+    fallback() external payable {
+        emit FallbackExecution(msg.sig, msg.data[4:]);
     }
 }

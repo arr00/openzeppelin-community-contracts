@@ -407,7 +407,7 @@ abstract contract AccountERC6900 is
             super.supportsInterface(interfaceId);
     }
 
-    function _fallback() internal validatedAndHooked returns (bytes memory) {
+    function _fallback() internal virtual validatedAndHooked returns (bytes memory) {
         ExecutionStorage storage executionStorage = _executionStorage[msg.sig];
         if (executionStorage.module == address(0)) {
             revert("Account: function not found");
@@ -424,8 +424,9 @@ abstract contract AccountERC6900 is
      */
     function _runPreExecutionHooks(
         EnumerableSet.Bytes32Set storage executionHooks
-    ) internal returns (PostExecutionHooksInfo[] memory res) {
+    ) internal returns (PostExecutionHooksInfo[] memory) {
         uint256 hooksLength = executionHooks.length();
+        PostExecutionHooksInfo[] memory postExecutionHooksInfo = new PostExecutionHooksInfo[](hooksLength);
 
         for (uint256 i = 0; i < hooksLength; ++i) {
             HookConfig hookConfig = executionHooks.at(i).toHookConfig();
@@ -433,16 +434,18 @@ abstract contract AccountERC6900 is
             if (hookConfig.hasPre()) {
                 if (hasPost) {
                     // Save return data
-                    res[i] = PostExecutionHooksInfo(hookConfig, _runPreExecutionHook(hookConfig));
+                    postExecutionHooksInfo[i] = PostExecutionHooksInfo(hookConfig, _runPreExecutionHook(hookConfig));
                 } else {
                     // No post. Not necessary to save.
                     _runPreExecutionHook(hookConfig);
                 }
             } else if (hasPost) {
                 // Must cache for running post
-                res[i] = PostExecutionHooksInfo(hookConfig, "");
+                postExecutionHooksInfo[i] = PostExecutionHooksInfo(hookConfig, "");
             }
         }
+
+        return postExecutionHooksInfo;
     }
 
     function _runPreExecutionHook(HookConfig hookConfig) internal returns (bytes memory) {
@@ -524,7 +527,7 @@ abstract contract AccountERC6900 is
     function _addExecutionFunction(
         address module,
         ManifestExecutionFunction calldata manifestExecutionFunction
-    ) internal {
+    ) internal virtual {
         if (_executionStorage[manifestExecutionFunction.executionSelector].module != address(0)) {
             revert("Account: execution function already installed");
         }
@@ -539,7 +542,7 @@ abstract contract AccountERC6900 is
     function _removeExecutionFunction(
         address module,
         ManifestExecutionFunction calldata manifestExecutionFunction
-    ) internal {
+    ) internal virtual {
         if (_executionStorage[manifestExecutionFunction.executionSelector].module != module) {
             revert("Account: module not installed for function to uninstall");
         }
@@ -549,7 +552,10 @@ abstract contract AccountERC6900 is
         delete _executionStorage[manifestExecutionFunction.executionSelector].allowGlobalValidation;
     }
 
-    function _addSelectorExecutionHook(address module, ManifestExecutionHook calldata manifestExecutionHook) internal {
+    function _addSelectorExecutionHook(
+        address module,
+        ManifestExecutionHook calldata manifestExecutionHook
+    ) internal virtual {
         if (!manifestExecutionHook.isPreHook && !manifestExecutionHook.isPostHook) {
             revert("Account: execution hook must be pre or post");
         }
@@ -560,7 +566,10 @@ abstract contract AccountERC6900 is
         ) revert("Hook already exists");
     }
 
-    function _removeExecutionHook(address module, ManifestExecutionHook calldata manifestExecutionHook) internal {
+    function _removeExecutionHook(
+        address module,
+        ManifestExecutionHook calldata manifestExecutionHook
+    ) internal virtual {
         if (
             !_executionStorage[manifestExecutionHook.executionSelector].executionHooks.remove(
                 _packExecutionHook(module, manifestExecutionHook)
@@ -572,7 +581,7 @@ abstract contract AccountERC6900 is
         EnumerableSet.Bytes32Set storage hooks,
         bytes[] memory hookUninstallData,
         uint256 uninstallOffset
-    ) internal returns (bool) {
+    ) internal virtual returns (bool) {
         bool success = true;
 
         uint256 hooksLength = hooks.length();
@@ -595,13 +604,13 @@ abstract contract AccountERC6900 is
         _supportedInterfaceIds[interfaceId] -= 1;
     }
 
-    function _addValidationSelector(ModuleEntity moduleEntity, bytes4 selector) internal {
+    function _addValidationSelector(ModuleEntity moduleEntity, bytes4 selector) internal virtual {
         if (!_validationStorage[moduleEntity].selectors.add(selector)) {
             revert("Validation selector already exists");
         }
     }
 
-    function _removeValidationSelector(ModuleEntity moduleEntity, bytes4 selector) internal {
+    function _removeValidationSelector(ModuleEntity moduleEntity, bytes4 selector) internal virtual {
         if (!_validationStorage[moduleEntity].selectors.remove(selector)) {
             revert("Validation selector does not exist");
         }
@@ -611,7 +620,7 @@ abstract contract AccountERC6900 is
         ModuleEntity moduleEntity,
         HookConfig hookConfig,
         bytes calldata onInstallData
-    ) internal {
+    ) internal virtual {
         if (!hookConfig.isValidationHook()) {
             revert("Account: hook is not a validation hook");
         }
@@ -622,7 +631,7 @@ abstract contract AccountERC6900 is
         _callOnInstall(moduleEntity.module(), onInstallData);
     }
 
-    function _removeValidationHook(ModuleEntity moduleEntity, HookConfig hookConfig) internal {
+    function _removeValidationHook(ModuleEntity moduleEntity, HookConfig hookConfig) internal virtual {
         if (!_validationStorage[moduleEntity].validationHooks.remove(hookConfig.toBytes32())) {
             revert("Validation hook does not exist");
         }
@@ -632,7 +641,7 @@ abstract contract AccountERC6900 is
         ModuleEntity moduleEntity,
         HookConfig hookConfig,
         bytes calldata onInstallData
-    ) internal {
+    ) internal virtual {
         if (hookConfig.isValidationHook()) {
             revert("Account: hook is not an execution hook");
         }
@@ -646,13 +655,13 @@ abstract contract AccountERC6900 is
         _callOnInstall(moduleEntity.module(), onInstallData);
     }
 
-    function _removeValidationExecutionHook(ModuleEntity moduleEntity, HookConfig hookConfig) internal {
+    function _removeValidationExecutionHook(ModuleEntity moduleEntity, HookConfig hookConfig) internal virtual {
         if (!_validationStorage[moduleEntity].executionHooks.remove(hookConfig.toBytes32())) {
             revert("Validation execution hook does not exist");
         }
     }
 
-    function _callOnInstall(address module, bytes calldata onInstallData) internal {
+    function _callOnInstall(address module, bytes calldata onInstallData) internal virtual {
         if (onInstallData.length > 0) {
             try IModule(module).onInstall(onInstallData) {} catch {
                 revert("onInstall failed");
@@ -703,8 +712,7 @@ abstract contract AccountERC6900 is
         for (uint256 i = 0; i < validationHooksLength; ++i) {
             HookConfig hookConfig = validationStorage.validationHooks.at(i).toHookConfig();
             userOpCopy.signature = signatureSegments[i];
-            currentValidationData = _mergeUserOpValidationData(
-                currentValidationData,
+            currentValidationData = currentValidationData.mergeUserOpValidation(
                 IValidationHookModule(hookConfig.module()).preUserOpValidationHook(
                     hookConfig.entity(),
                     userOpCopy,
@@ -714,38 +722,11 @@ abstract contract AccountERC6900 is
         }
 
         userOpCopy.signature = signatureSegments[validationHooksLength];
-        currentValidationData = _mergeUserOpValidationData(
-            currentValidationData,
+        currentValidationData = currentValidationData.mergeUserOpValidation(
             IValidationModule(validationFunc.module()).validateUserOp(validationFunc.entity(), userOp, userOpHash)
         );
 
         return currentValidationData;
-    }
-
-    function _mergeUserOpValidationData(
-        uint256 currentValidationData,
-        uint256 newValidationData
-    ) internal pure returns (uint256) {
-        if (currentValidationData == type(uint256).max) return newValidationData;
-
-        uint48 currentValidUntil = uint48(currentValidationData >> 160);
-        uint48 newValidUntil = uint48(newValidationData >> 160);
-        uint48 validUntil;
-        unchecked {
-            // Valid until of 0 eq to no limit
-            validUntil = currentValidUntil - 1 < newValidUntil - 1 ? currentValidUntil : newValidUntil;
-        }
-
-        uint48 currentValidAfter = uint48(currentValidationData >> 208);
-        uint48 newValidAfter = uint48(newValidationData >> 208);
-        uint48 validAfter;
-        validAfter = currentValidAfter > newValidAfter ? currentValidAfter : newValidAfter;
-
-        return
-            (uint256(validAfter) << 208) |
-            (uint256(validUntil) << 160) |
-            uint160(currentValidationData) |
-            uint160(newValidationData);
     }
 
     function _packExecutionHook(
@@ -753,8 +734,11 @@ abstract contract AccountERC6900 is
         ManifestExecutionHook calldata manifestExecutionHook
     ) internal pure returns (bytes25) {
         bytes1 flags = bytes1(
-            ((manifestExecutionHook.isPreHook ? 1 : 0) << 2) | ((manifestExecutionHook.isPostHook ? 1 : 0) << 1) | 1
+            ((manifestExecutionHook.isPreHook ? 1 : 0) << 2) | ((manifestExecutionHook.isPostHook ? 1 : 0) << 1)
         );
-        return bytes25(bytes20(module)) | bytes5(bytes4(manifestExecutionHook.entityId)) | flags;
+        return
+            bytes25(bytes20(module)) |
+            bytes25(uint200(manifestExecutionHook.entityId) << 8) |
+            bytes25(uint200(uint8(flags)));
     }
 }

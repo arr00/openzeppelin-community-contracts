@@ -67,4 +67,23 @@ library ERC6900Utils {
     function entity(ModuleEntity moduleEntity_) internal pure returns (uint32) {
         return uint32(uint192(ModuleEntity.unwrap(moduleEntity_)));
     }
+
+    function mergeUserOpValidation(uint256 self, uint256 newValidation) internal pure returns (uint256) {
+        if (self == type(uint256).max) return newValidation;
+
+        uint48 currentValidUntil = uint48(self >> 160);
+        uint48 newValidUntil = uint48(newValidation >> 160);
+        uint48 validUntil;
+        unchecked {
+            // Valid until of 0 eq to no limit
+            validUntil = currentValidUntil - 1 < newValidUntil - 1 ? currentValidUntil : newValidUntil;
+        }
+
+        uint48 currentValidAfter = uint48(self >> 208);
+        uint48 newValidAfter = uint48(newValidation >> 208);
+        uint48 validAfter;
+        validAfter = currentValidAfter > newValidAfter ? currentValidAfter : newValidAfter;
+
+        return (uint256(validAfter) << 208) | (uint256(validUntil) << 160) | uint160(self) | uint160(newValidation);
+    }
 }
