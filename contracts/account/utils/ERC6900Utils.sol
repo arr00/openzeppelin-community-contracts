@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 
+import {Packing} from "@openzeppelin/contracts/utils/Packing.sol";
 import {HookConfig, ModuleEntity, ValidationConfig, ValidationFlags} from "contracts/interfaces/draft-IERC6900.sol";
 
 library ERC6900Utils {
@@ -9,11 +10,11 @@ library ERC6900Utils {
     }
 
     function entity(ValidationConfig validationConfig) internal pure returns (uint32) {
-        return uint32(bytes4(ValidationConfig.unwrap(validationConfig) << 160));
+        return uint32(Packing.extract_32_4(ValidationConfig.unwrap(validationConfig), 20));
     }
 
     function flags(ValidationConfig validationConfig) internal pure returns (ValidationFlags) {
-        return ValidationFlags.wrap(uint8(uint200(ValidationConfig.unwrap(validationConfig))));
+        return ValidationFlags.wrap(uint8(Packing.extract_32_1(ValidationConfig.unwrap(validationConfig), 24)));
     }
 
     function moduleEntity(ValidationConfig validationConfig) internal pure returns (ModuleEntity) {
@@ -41,7 +42,7 @@ library ERC6900Utils {
     }
 
     function isValidationHook(HookConfig hookConfig) internal pure returns (bool) {
-        return (uint8(uint200(HookConfig.unwrap(hookConfig))) & 1) == 1;
+        return uint8(Packing.extract_32_1(HookConfig.unwrap(hookConfig), 24)) & 1 == 1;
     }
 
     function module(HookConfig config) internal pure returns (address) {
@@ -69,8 +70,6 @@ library ERC6900Utils {
     }
 
     function mergeUserOpValidation(uint256 self, uint256 newValidation) internal pure returns (uint256) {
-        if (self == type(uint256).max) return newValidation;
-
         uint48 currentValidUntil = uint48(self >> 160);
         uint48 newValidUntil = uint48(newValidation >> 160);
         uint48 validUntil;
@@ -81,8 +80,7 @@ library ERC6900Utils {
 
         uint48 currentValidAfter = uint48(self >> 208);
         uint48 newValidAfter = uint48(newValidation >> 208);
-        uint48 validAfter;
-        validAfter = currentValidAfter > newValidAfter ? currentValidAfter : newValidAfter;
+        uint48 validAfter = currentValidAfter > newValidAfter ? currentValidAfter : newValidAfter;
 
         return (uint256(validAfter) << 208) | (uint256(validUntil) << 160) | uint160(self) | uint160(newValidation);
     }

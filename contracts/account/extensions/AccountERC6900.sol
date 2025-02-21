@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 
-import {IModularAccount, IExecutionHookModule, IModularAccountView, ValidationDataView, ExecutionDataView, IValidationHookModule, PackedUserOperation, IValidationModule, Call, ValidationFlags, ModuleEntity, ValidationConfig, ExecutionManifest, HookConfig, ManifestExecutionFunction, ManifestExecutionHook, IModule} from "contracts/interfaces/draft-IERC6900.sol";
+import {IAccountExecute} from "@openzeppelin/contracts/interfaces/draft-IERC4337.sol";
 import {IERC1271} from "@openzeppelin/contracts/interfaces/IERC1271.sol";
+import {Address} from "@openzeppelin/contracts/utils/Address.sol";
 import {ERC165} from "@openzeppelin/contracts/utils/introspection/ERC165.sol";
 import {EnumerableSet} from "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
-import {IAccountExecute} from "@openzeppelin/contracts/interfaces/draft-IERC4337.sol";
-import {Address} from "@openzeppelin/contracts/utils/Address.sol";
+import {IModularAccount, IModularAccountView, IModule, IExecutionHookModule, IValidationModule, IValidationHookModule, ValidationDataView, ExecutionDataView, PackedUserOperation, Call, ValidationFlags, ModuleEntity, ValidationConfig, HookConfig, ExecutionManifest, ManifestExecutionFunction, ManifestExecutionHook} from "../../interfaces/draft-IERC6900.sol";
 import {AccountCore} from "../AccountCore.sol";
 import {ERC6900Utils} from "../utils/ERC6900Utils.sol";
 
@@ -21,6 +21,12 @@ abstract contract AccountERC6900 is
     using EnumerableSet for EnumerableSet.Bytes32Set;
     using ERC6900Utils for *;
     using Address for address;
+
+    enum ValidationType {
+        Direct,
+        UserOp,
+        Signature
+    }
 
     struct ExecutionStorage {
         // The module that implements this execution function.
@@ -56,8 +62,16 @@ abstract contract AccountERC6900 is
     mapping(bytes4 => uint256) private _supportedInterfaceIds;
     mapping(ModuleEntity => ValidationStorage) private _validationStorage;
 
+    error ERC6900AccountInvalidModule();
+    error ERC6900AccountInvalidUninstallData();
+    error ERC6900AccountValidationDoesNotApply();
+    error ERC6900AccountSelfCall();
+    error ERC6900AccountFunctionNotFound();
+    error ERC6900AccountInvalidHookConfig();
+    error ERC6900AccountModuleOnInstallFailed();
+
     modifier validatedAndHooked() {
-        PostExecutionHooksInfo[] memory postValidationExecutionHooks = _runDirectValidation(msg.sig);
+        PostExecutionHooksInfo[] memory postValidationExecutionHooks = _runDirectValidation();
         PostExecutionHooksInfo[] memory postSelectorExecutionHooks = _runPreExecutionHooks(
             _executionStorage[msg.sig].executionHooks
         );
@@ -78,7 +92,7 @@ abstract contract AccountERC6900 is
         ExecutionManifest calldata manifest,
         bytes calldata installData
     ) public virtual override validatedAndHooked {
-        if (module == address(0)) revert("Module is 0");
+        if (module == address(0)) revert ERC6900AccountInvalidModule();
 
         uint256 executionFunctionLength = manifest.executionFunctions.length;
         for (uint256 i = 0; i < executionFunctionLength; ++i) {
@@ -108,7 +122,7 @@ abstract contract AccountERC6900 is
         ExecutionManifest calldata manifest,
         bytes calldata uninstallData
     ) public override validatedAndHooked {
-        if (module == address(0)) revert("Module is 0");
+        if (module == address(0)) revert ERC6900AccountInvalidModule();
 
         uint256 interfaceIdsLength = manifest.interfaceIds.length;
         for (uint256 i = 0; i < interfaceIdsLength; ++i) {
@@ -189,7 +203,7 @@ abstract contract AccountERC6900 is
             uint256 hooksLength = validationHooksLength +
                 _validationStorage[validationFunction].executionHooks.length();
             if (hooksLength != hookUninstallData.length) {
-                revert("Account: hookUninstallData length does not match hooks length");
+                revert ERC6900AccountInvalidUninstallData();
             }
 
             // Assume uninstallation data is validation hooks, then execution hooks. Following the reference impl
@@ -227,7 +241,7 @@ abstract contract AccountERC6900 is
         bytes calldata data
     ) public payable virtual override validatedAndHooked returns (bytes memory) {
         if (target == address(this)) {
-            revert("Self call");
+            revert ERC6900AccountSelfCall();
         }
         (bool success, bytes memory res) = target.call{value: value}(data);
         return Address.verifyCallResult(success, res);
@@ -242,7 +256,7 @@ abstract contract AccountERC6900 is
         for (uint256 i = 0; i < length; ++i) {
             // This is on the stricter side and we may want to relax the restriction (more logic)
             if (calls[i].target == address(this)) {
-                revert("Self call");
+                revert ERC6900AccountSelfCall();
             }
 
             (bool success, bytes memory res_) = calls[i].target.call{value: calls[i].value}(calls[i].data);
@@ -263,13 +277,7 @@ abstract contract AccountERC6900 is
         ModuleEntity moduleEntity = ModuleEntity.wrap(bytes24(authorization[:24]));
         ValidationStorage storage validationStorage = _validationStorage[moduleEntity];
 
-        bytes4 selector = bytes4(data[:4]);
-        if (
-            !(validationStorage.validationFlags.isGlobal() && _executionStorage[selector].allowGlobalValidation) &&
-            !validationStorage.selectors.contains(selector)
-        ) {
-            revert("Validation not allowed");
-        }
+        _validationApplies(validationStorage, ValidationType.Direct, bytes4(data[:4]));
 
         _runRuntimeValidationHooks(validationStorage.validationHooks, authorization);
 
@@ -316,9 +324,7 @@ abstract contract AccountERC6900 is
         ModuleEntity moduleEntity = ModuleEntity.wrap(bytes24(signature));
         ValidationStorage storage validationStorage = _validationStorage[moduleEntity];
 
-        if (!validationStorage.validationFlags.isSignatureValidation()) {
-            revert("Validation not applicable to signature");
-        }
+        _validationApplies(validationStorage, ValidationType.Signature, bytes4(0));
 
         bytes[] memory authorizationSegments = abi.decode(authorization, (bytes[]));
         uint256 validationHooksLength = validationStorage.validationHooks.length();
@@ -410,7 +416,7 @@ abstract contract AccountERC6900 is
     function _fallback() internal virtual validatedAndHooked returns (bytes memory) {
         ExecutionStorage storage executionStorage = _executionStorage[msg.sig];
         if (executionStorage.module == address(0)) {
-            revert("Account: function not found");
+            revert ERC6900AccountFunctionNotFound();
         }
         return executionStorage.module.functionCall(msg.data);
     }
@@ -492,14 +498,14 @@ abstract contract AccountERC6900 is
         }
     }
 
-    function _runDirectValidation(bytes4 selector) internal returns (PostExecutionHooksInfo[] memory) {
+    function _runDirectValidation() internal returns (PostExecutionHooksInfo[] memory) {
         PostExecutionHooksInfo[] memory postExecutionHooksInfo;
 
         // No further validation required
         if (
             msg.sender == address(this) ||
             msg.sender == address(entryPoint()) ||
-            _executionStorage[selector].skipRuntimeValidation
+            _executionStorage[msg.sig].skipRuntimeValidation
         ) return postExecutionHooksInfo;
 
         ModuleEntity moduleEntity = ModuleEntity.wrap(
@@ -507,12 +513,7 @@ abstract contract AccountERC6900 is
         );
 
         ValidationStorage storage validationStorage = _validationStorage[moduleEntity];
-        if (
-            !(validationStorage.validationFlags.isGlobal() && _executionStorage[msg.sig].allowGlobalValidation) &&
-            !validationStorage.selectors.contains(selector)
-        ) {
-            revert("Unauthorized");
-        }
+        _validationApplies(validationStorage, ValidationType.Direct, msg.sig);
 
         // No authorization since it is a direct call
         _runRuntimeValidationHooks(validationStorage.validationHooks, "");
@@ -557,7 +558,7 @@ abstract contract AccountERC6900 is
         ManifestExecutionHook calldata manifestExecutionHook
     ) internal virtual {
         if (!manifestExecutionHook.isPreHook && !manifestExecutionHook.isPostHook) {
-            revert("Account: execution hook must be pre or post");
+            revert ERC6900AccountInvalidHookConfig();
         }
         if (
             !_executionStorage[manifestExecutionHook.executionSelector].executionHooks.add(
@@ -622,7 +623,7 @@ abstract contract AccountERC6900 is
         bytes calldata onInstallData
     ) internal virtual {
         if (!hookConfig.isValidationHook()) {
-            revert("Account: hook is not a validation hook");
+            revert ERC6900AccountInvalidHookConfig();
         }
         if (!_validationStorage[moduleEntity].validationHooks.add(hookConfig.toBytes32())) {
             revert("Validation hook already exists");
@@ -643,10 +644,10 @@ abstract contract AccountERC6900 is
         bytes calldata onInstallData
     ) internal virtual {
         if (hookConfig.isValidationHook()) {
-            revert("Account: hook is not an execution hook");
+            revert ERC6900AccountInvalidHookConfig();
         }
         if (!hookConfig.hasPre() && !hookConfig.hasPost()) {
-            revert("Account: execution hook must be pre or post");
+            revert ERC6900AccountInvalidHookConfig();
         }
         if (!_validationStorage[moduleEntity].executionHooks.add(hookConfig.toBytes32())) {
             revert("Validation execution hook already exists");
@@ -664,7 +665,7 @@ abstract contract AccountERC6900 is
     function _callOnInstall(address module, bytes calldata onInstallData) internal virtual {
         if (onInstallData.length > 0) {
             try IModule(module).onInstall(onInstallData) {} catch {
-                revert("onInstall failed");
+                revert ERC6900AccountModuleOnInstallFailed();
             }
         }
     }
@@ -675,10 +676,6 @@ abstract contract AccountERC6900 is
     ) internal virtual override returns (uint256) {
         ModuleEntity validationFunc = ModuleEntity.wrap(bytes24(userOp.signature[:24]));
         ValidationStorage storage validationStorage = _validationStorage[validationFunc];
-
-        if (!validationStorage.validationFlags.isUserOpValidation()) {
-            revert("Account: validation not applicable to user op");
-        }
 
         {
             bytes4 selector = bytes4(userOp.callData[:4]);
@@ -691,12 +688,7 @@ abstract contract AccountERC6900 is
             if (selector == IAccountExecute.executeUserOp.selector) {
                 selector = bytes4(userOp.callData[4:8]);
             }
-            if (
-                !(validationStorage.validationFlags.isGlobal() && _executionStorage[selector].allowGlobalValidation) &&
-                !validationStorage.selectors.contains(selector)
-            ) {
-                revert("Account: validation not allowed");
-            }
+            _validationApplies(validationStorage, ValidationType.UserOp, selector);
         }
 
         uint256 validationHooksLength = validationStorage.validationHooks.length();
@@ -707,7 +699,7 @@ abstract contract AccountERC6900 is
         }
 
         PackedUserOperation memory userOpCopy = userOp;
-        uint256 currentValidationData = type(uint256).max;
+        uint256 currentValidationData;
 
         for (uint256 i = 0; i < validationHooksLength; ++i) {
             HookConfig hookConfig = validationStorage.validationHooks.at(i).toHookConfig();
@@ -727,6 +719,32 @@ abstract contract AccountERC6900 is
         );
 
         return currentValidationData;
+    }
+
+    /// @dev Internal function which reverts if the given validation function does not apply to the given context.
+    function _validationApplies(
+        ValidationStorage storage validationStorage,
+        ValidationType validationType,
+        bytes4 functionSelector
+    ) internal view {
+        if (validationType == ValidationType.Signature) {
+            if (!validationStorage.validationFlags.isSignatureValidation()) {
+                revert ERC6900AccountValidationDoesNotApply();
+            }
+            return;
+        }
+        if (validationType == ValidationType.UserOp) {
+            if (!validationStorage.validationFlags.isUserOpValidation()) {
+                revert ERC6900AccountValidationDoesNotApply();
+            }
+        }
+        if (
+            !(validationStorage.validationFlags.isGlobal() &&
+                _executionStorage[functionSelector].allowGlobalValidation) &&
+            !validationStorage.selectors.contains(functionSelector)
+        ) {
+            revert ERC6900AccountValidationDoesNotApply();
+        }
     }
 
     function _packExecutionHook(
