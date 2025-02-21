@@ -426,7 +426,7 @@ abstract contract AccountERC6900 is
     /**
      * @dev Run pre-execution hooks.
      *
-     * Note: This function does not assert that a hook is an execution as it is enforced when installed.
+     * Note: This function does not assert that a hook is an execution hook as it is enforced when installed.
      */
     function _runPreExecutionHooks(
         EnumerableSet.Bytes32Set storage executionHooks
