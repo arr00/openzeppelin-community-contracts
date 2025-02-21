@@ -4,7 +4,7 @@ pragma solidity ^0.8.0;
 import {IAccountExecute} from "@openzeppelin/contracts/interfaces/draft-IERC4337.sol";
 import {IERC1271} from "@openzeppelin/contracts/interfaces/IERC1271.sol";
 import {Address} from "@openzeppelin/contracts/utils/Address.sol";
-import {ERC165} from "@openzeppelin/contracts/utils/introspection/ERC165.sol";
+import {ERC165, IERC165} from "@openzeppelin/contracts/utils/introspection/ERC165.sol";
 import {EnumerableSet} from "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 import {IModularAccount, IModularAccountView, IModule, IExecutionHookModule, IValidationModule, IValidationHookModule, ValidationDataView, ExecutionDataView, PackedUserOperation, Call, ValidationFlags, ModuleEntity, ValidationConfig, HookConfig, ExecutionManifest, ManifestExecutionFunction, ManifestExecutionHook} from "../../interfaces/draft-IERC6900.sol";
 import {AccountCore} from "../AccountCore.sol";
@@ -22,6 +22,13 @@ abstract contract AccountERC6900 is
     using ERC6900Utils for *;
     using Address for address;
 
+    /**
+     * Enum representing the 3 different types of validation done by the account.
+     *
+     * - Direct: Direct validation is done when a caller directly calls a function on the modular account or calls {executeWithRuntimeValidation}.
+     * - UserOp: UserOp validation is done on {validateUserOp} calls.
+     * - Signature: Signature validation is done on 1271 {isValidSignature} calls.
+     */
     enum ValidationType {
         Direct,
         UserOp,
@@ -405,7 +412,7 @@ abstract contract AccountERC6900 is
         return "@openzeppelin/community-contracts.AccountERC6900.v0.0.0";
     }
 
-    /// @inheritdoc ERC165
+    /// @inheritdoc IERC165
     function supportsInterface(bytes4 interfaceId) public view virtual override returns (bool) {
         return
             _supportedInterfaceIds[interfaceId] > 0 ||
@@ -426,7 +433,7 @@ abstract contract AccountERC6900 is
     /**
      * @dev Run pre-execution hooks.
      *
-     * Note: This function does not assert that a hook is an execution hook as it is enforced when installed.
+     * NOTE: This function does not assert that a hook is an execution hook as it is enforced when installed.
      */
     function _runPreExecutionHooks(
         EnumerableSet.Bytes32Set storage executionHooks
