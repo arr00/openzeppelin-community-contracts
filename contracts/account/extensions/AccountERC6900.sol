@@ -726,7 +726,7 @@ abstract contract AccountERC6900 is
         ValidationStorage storage validationStorage,
         ValidationType validationType,
         bytes4 functionSelector
-    ) internal view {
+    ) internal view virtual {
         if (validationType == ValidationType.Signature) {
             if (!validationStorage.validationFlags.isSignatureValidation()) {
                 revert ERC6900AccountValidationDoesNotApply();
@@ -750,7 +750,7 @@ abstract contract AccountERC6900 is
     function _packExecutionHook(
         address module,
         ManifestExecutionHook calldata manifestExecutionHook
-    ) internal pure returns (bytes25) {
+    ) private pure returns (bytes25) {
         bytes1 flags = bytes1(
             ((manifestExecutionHook.isPreHook ? 1 : 0) << 2) | ((manifestExecutionHook.isPostHook ? 1 : 0) << 1)
         );
