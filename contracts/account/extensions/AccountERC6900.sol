@@ -128,7 +128,7 @@ abstract contract AccountERC6900 is
         address module,
         ExecutionManifest calldata manifest,
         bytes calldata uninstallData
-    ) public override validatedAndHooked {
+    ) public virtual override validatedAndHooked {
         if (module == address(0)) revert ERC6900AccountInvalidModule();
 
         uint256 interfaceIdsLength = manifest.interfaceIds.length;
@@ -277,7 +277,7 @@ abstract contract AccountERC6900 is
     function executeWithRuntimeValidation(
         bytes calldata data,
         bytes calldata authorization
-    ) public payable returns (bytes memory) {
+    ) public payable virtual returns (bytes memory) {
         if (authorization.length < 24) {
             revert("Authorization data too short");
         }
@@ -322,7 +322,7 @@ abstract contract AccountERC6900 is
     }
 
     /// @inheritdoc IERC1271
-    function isValidSignature(bytes32 hash, bytes calldata signature) public view returns (bytes4) {
+    function isValidSignature(bytes32 hash, bytes calldata signature) public view virtual returns (bytes4) {
         if (signature.length < 24) {
             revert("Signature too short");
         }
@@ -437,7 +437,7 @@ abstract contract AccountERC6900 is
      */
     function _runPreExecutionHooks(
         EnumerableSet.Bytes32Set storage executionHooks
-    ) internal returns (PostExecutionHooksInfo[] memory) {
+    ) internal virtual returns (PostExecutionHooksInfo[] memory) {
         uint256 hooksLength = executionHooks.length();
         PostExecutionHooksInfo[] memory postExecutionHooksInfo = new PostExecutionHooksInfo[](hooksLength);
 
@@ -461,7 +461,7 @@ abstract contract AccountERC6900 is
         return postExecutionHooksInfo;
     }
 
-    function _runPreExecutionHook(HookConfig hookConfig) internal returns (bytes memory) {
+    function _runPreExecutionHook(HookConfig hookConfig) internal virtual returns (bytes memory) {
         return
             IExecutionHookModule(hookConfig.module()).preExecutionHook(
                 hookConfig.entity(),
@@ -471,7 +471,7 @@ abstract contract AccountERC6900 is
             );
     }
 
-    function _runPostExecutionHooks(PostExecutionHooksInfo[] memory postExecutionHooksInfo) internal {
+    function _runPostExecutionHooks(PostExecutionHooksInfo[] memory postExecutionHooksInfo) internal virtual {
         uint256 hooksLength = postExecutionHooksInfo.length;
 
         for (uint256 i = hooksLength; i > 0; --i) {
@@ -485,7 +485,10 @@ abstract contract AccountERC6900 is
         }
     }
 
-    function _runRuntimeValidationHooks(EnumerableSet.Bytes32Set storage hooks, bytes memory authorization) internal {
+    function _runRuntimeValidationHooks(
+        EnumerableSet.Bytes32Set storage hooks,
+        bytes memory authorization
+    ) internal virtual {
         uint256 hooksLength = hooks.length();
 
         bytes[] memory authorizations = new bytes[](hooksLength + 1);
@@ -505,7 +508,7 @@ abstract contract AccountERC6900 is
         }
     }
 
-    function _runDirectValidation() internal returns (PostExecutionHooksInfo[] memory) {
+    function _runDirectValidation() internal virtual returns (PostExecutionHooksInfo[] memory) {
         PostExecutionHooksInfo[] memory postExecutionHooksInfo;
 
         // No further validation required
