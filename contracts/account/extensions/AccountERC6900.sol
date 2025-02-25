@@ -138,7 +138,7 @@ abstract contract AccountERC6900 is
 
         uint256 executionHooksLength = manifest.executionHooks.length;
         for (uint256 i = 0; i < executionHooksLength; ++i) {
-            _removeExecutionHook(module, manifest.executionHooks[i]);
+            _removeSelectorExecutionHook(module, manifest.executionHooks[i]);
         }
 
         uint256 executionFunctionLength = manifest.executionFunctions.length;
@@ -574,7 +574,7 @@ abstract contract AccountERC6900 is
         ) revert("Hook already exists");
     }
 
-    function _removeExecutionHook(
+    function _removeSelectorExecutionHook(
         address module,
         ManifestExecutionHook calldata manifestExecutionHook
     ) internal virtual {
@@ -618,12 +618,6 @@ abstract contract AccountERC6900 is
         }
     }
 
-    function _removeValidationSelector(ModuleEntity moduleEntity, bytes4 selector) internal virtual {
-        if (!_validationStorage[moduleEntity].selectors.remove(selector)) {
-            revert("Validation selector does not exist");
-        }
-    }
-
     function _addValidationHook(
         ModuleEntity moduleEntity,
         HookConfig hookConfig,
@@ -637,12 +631,6 @@ abstract contract AccountERC6900 is
         }
 
         _callOnInstall(moduleEntity.module(), onInstallData);
-    }
-
-    function _removeValidationHook(ModuleEntity moduleEntity, HookConfig hookConfig) internal virtual {
-        if (!_validationStorage[moduleEntity].validationHooks.remove(hookConfig.toBytes32())) {
-            revert("Validation hook does not exist");
-        }
     }
 
     function _addValidationExecutionHook(
@@ -661,12 +649,6 @@ abstract contract AccountERC6900 is
         }
 
         _callOnInstall(moduleEntity.module(), onInstallData);
-    }
-
-    function _removeValidationExecutionHook(ModuleEntity moduleEntity, HookConfig hookConfig) internal virtual {
-        if (!_validationStorage[moduleEntity].executionHooks.remove(hookConfig.toBytes32())) {
-            revert("Validation execution hook does not exist");
-        }
     }
 
     function _callOnInstall(address module, bytes calldata onInstallData) internal virtual {
