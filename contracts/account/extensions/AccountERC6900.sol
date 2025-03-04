@@ -73,9 +73,10 @@ abstract contract AccountERC6900 is
     error ERC6900AccountInvalidUninstallData();
     error ERC6900AccountValidationDoesNotApply();
     error ERC6900AccountSelfCall();
-    error ERC6900AccountFunctionNotFound();
     error ERC6900AccountInvalidHookConfig();
     error ERC6900AccountModuleOnInstallFailed();
+    error ERC6900AccountExecutionFunctionAlreadyInstalled(bytes4 selector);
+    error ERC6900AccountExecutionFunctionNotFound(bytes4 selector);
 
     modifier validatedAndHooked() {
         PostExecutionHooksInfo[] memory postValidationExecutionHooks = _runDirectValidation();
@@ -423,7 +424,7 @@ abstract contract AccountERC6900 is
     function _fallback() internal virtual validatedAndHooked returns (bytes memory) {
         ExecutionStorage storage executionStorage = _executionStorage[msg.sig];
         if (executionStorage.module == address(0)) {
-            revert ERC6900AccountFunctionNotFound();
+            revert ERC6900AccountExecutionFunctionNotFound(msg.sig);
         }
         return executionStorage.module.functionCall(msg.data);
     }
@@ -540,7 +541,7 @@ abstract contract AccountERC6900 is
         ManifestExecutionFunction calldata manifestExecutionFunction
     ) internal virtual {
         if (_executionStorage[manifestExecutionFunction.executionSelector].module != address(0)) {
-            revert("Account: execution function already installed");
+            revert ERC6900AccountExecutionFunctionAlreadyInstalled(manifestExecutionFunction.executionSelector);
         }
 
         _executionStorage[manifestExecutionFunction.executionSelector].module = module;
@@ -555,7 +556,7 @@ abstract contract AccountERC6900 is
         ManifestExecutionFunction calldata manifestExecutionFunction
     ) internal virtual {
         if (_executionStorage[manifestExecutionFunction.executionSelector].module != module) {
-            revert("Account: module not installed for function to uninstall");
+            revert ERC6900AccountExecutionFunctionNotFound(manifestExecutionFunction.executionSelector);
         }
 
         delete _executionStorage[manifestExecutionFunction.executionSelector].module;
